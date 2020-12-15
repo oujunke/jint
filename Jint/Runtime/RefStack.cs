@@ -28,6 +28,17 @@ namespace Jint.Runtime
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool Last(out ExecutionContext executionContext)
+        {
+            if (_size < 3)
+            {
+                executionContext = default;
+                return false;
+            }
+            executionContext= _array[_size - 2];
+            return true;
+        }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Pop()
         {
             if (_size == 0)

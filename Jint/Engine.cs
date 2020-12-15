@@ -235,7 +235,6 @@ namespace Jint
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             get => ref _executionContexts.Peek();
         }
-
         public GlobalSymbolRegistry GlobalSymbolRegistry { get; }
 
         internal long CurrentMemoryUsage { get; private set; }
@@ -875,7 +874,14 @@ namespace Jint
                     // any parameter default value initializers, or any destructured parameters.
                     ao = CreateMappedArgumentsObject(functionInstance, parameterNames, argumentsList, envRec, configuration.HasRestParameter);
                 }
-
+                if(_executionContexts.Last(out ExecutionContext executionContext)&& executionContext.VariableEnvironment._record is FunctionEnvironmentRecord fer)
+                {
+                    var callee=ao.Get(CommonProperties.Callee);
+                    if(callee is ScriptFunctionInstance sfi&& fer.GetBindingValue(CommonProperties.Arguments._value, true).Get(CommonProperties.Callee) is ScriptFunctionInstance psfi)
+                    {
+                        sfi.SetOwnProperty(CommonProperties.Caller, new PropertyDescriptor(psfi, PropertyFlag.Configurable));
+                    }
+                }
                 if (strict)
                 {
                     envRec.CreateImmutableBindingAndInitialize(KnownKeys.Arguments, strict: false, ao);
