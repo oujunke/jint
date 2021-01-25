@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using Esprima;
 using Esprima.Ast;
 using Jint.Native;
 using Jint.Native.Number;
@@ -419,7 +420,7 @@ namespace Jint.Runtime
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal static string  ToString(double d)
+        internal static string ToString(double d)
         {
             if (d > long.MinValue && d < long.MaxValue  && Math.Abs(d % 1) <= DoubleIsIntegerTolerance)
             {
@@ -427,11 +428,9 @@ namespace Jint.Runtime
                 return ToString((long) d);
             }
 
-            using (var stringBuilder = StringBuilderPool.Rent())
-            {
-                // we can create smaller array as we know the format to be short
-                return NumberPrototype.NumberToString(d, new DtoaBuilder(17), stringBuilder.Builder);
-            }
+            using var stringBuilder = StringBuilderPool.Rent();
+            // we can create smaller array as we know the format to be short
+            return NumberPrototype.NumberToString(d, new DtoaBuilder(17), stringBuilder.Builder);
         }
 
         /// <summary>
@@ -495,13 +494,22 @@ namespace Jint.Runtime
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static ObjectInstance ToObject(Engine engine, JsValue value)
         {
+            if (value is ObjectInstance oi)
+            {
+                return oi;
+            }
+
+            return ToObjectNonObject(engine, value);
+        }
+
+        private static ObjectInstance ToObjectNonObject(Engine engine, JsValue value)
+        {
             var type = value._type & ~InternalTypes.InternalFlags;
             return type switch
             {
-                InternalTypes.Object => (ObjectInstance) value,
-                InternalTypes.Boolean => engine.Boolean.Construct(((JsBoolean) value)._value),
-                InternalTypes.Number => engine.Number.Construct(((JsNumber) value)._value),
-                InternalTypes.Integer => engine.Number.Construct(((JsNumber) value)._value),
+                InternalTypes.Boolean => engine.Boolean.Construct((JsBoolean) value),
+                InternalTypes.Number => engine.Number.Construct((JsNumber) value),
+                InternalTypes.Integer => engine.Number.Construct((JsNumber) value),
                 InternalTypes.String => engine.String.Construct(value.ToString()),
                 InternalTypes.Symbol => engine.Symbol.Construct((JsSymbol) value),
                 InternalTypes.Null => ExceptionHelper.ThrowTypeError<ObjectInstance>(engine, "Cannot convert undefined or null to object"),
@@ -509,28 +517,30 @@ namespace Jint.Runtime
                 _ => ExceptionHelper.ThrowTypeError<ObjectInstance>(engine, "Cannot convert given item to object")
             };
         }
-        
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
         internal static void CheckObjectCoercible(
             Engine engine,
             JsValue o,
-            MemberExpression expression,
+            Node sourceNode,
             string referenceName)
         {
-            if (o._type < InternalTypes.Boolean && !engine.Options.ReferenceResolver.CheckCoercible(o))
+            if (!engine.Options.ReferenceResolver.CheckCoercible(o))
             {
-                ThrowTypeError(engine, o, expression, referenceName);
+                ThrowMemberNullOrUndefinedError(engine, o, sourceNode.Location, referenceName);
             }
         }
 
-        private static void ThrowTypeError(
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static void ThrowMemberNullOrUndefinedError(
             Engine engine,
             JsValue o,
-            MemberExpression expression,
+            in Location location,
             string referencedName)
         {
             referencedName ??= "unknown";
             var message = $"Cannot read property '{referencedName}' of {o}";
-            throw new JavaScriptException(engine.TypeError, message).SetCallstack(engine, expression.Location);
+            throw new JavaScriptException(engine.TypeError, message).SetCallstack(engine, location);
         }
 
         public static void CheckObjectCoercible(Engine engine, JsValue o)
