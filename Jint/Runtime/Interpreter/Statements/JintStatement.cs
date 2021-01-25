@@ -43,7 +43,7 @@ namespace Jint.Runtime.Interpreter.Statements
                 Initialize();
                 _initialized = true;
             }
-
+            //Engine.StreamWriter.WriteLine(_engine._lastSyntaxNode.Range + this.ToString());
             return ExecuteInternal();
         }
 

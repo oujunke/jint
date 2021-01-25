@@ -29,7 +29,7 @@ namespace Jint.Native.Object
 
         internal ObjectInstance _prototype;
         protected readonly Engine _engine;
-
+        public string ReferenceName;
         public ObjectInstance(Engine engine) : this(engine, ObjectClass.Object)
         {
         }

@@ -40,6 +40,7 @@ namespace Jint.Runtime.Interpreter.Expressions
                 Initialize();
                 _initialized = true;
             }
+           // Engine.StreamWriter.WriteLine(_expression.Range + ToString());
             return EvaluateInternal();
         }
 

@@ -118,6 +118,10 @@ namespace Jint.Native.Function
         {
             if (thisObj.IsObject() && thisObj.IsCallable)
             {
+                if(thisObj is ScriptFunctionInstance sfi&& sfi.FunctionDeclaration is Esprima.Ast.FunctionExpression fx)
+                {
+                    return fx.Location.Source?.Substring(fx.Range.Start,fx.Range.End- fx.Range.Start).Replace("\r\n","\n").Replace("\n","\r\n");
+                }
                 return thisObj.ToString();
             }
 

@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Runtime.CompilerServices;
+using System.Threading.Tasks;
 using Esprima;
 using Esprima.Ast;
 using Jint.Native;
@@ -68,7 +70,15 @@ namespace Jint
         private ErrorConstructor _uriError;
         private DebugHandler _debugHandler;
         private List<BreakPoint> _breakPoints;
-
+        //public static StreamWriter StreamWriter;
+        static Engine()
+        {
+            //StreamWriter = new StreamWriter("CefJsDebug.log");
+        }
+        public static void Flush()
+        {
+            //StreamWriter.Flush();
+        }
         // cached access
         private readonly List<IConstraint> _constraints;
         private readonly bool _isDebugMode;
@@ -85,19 +95,19 @@ namespace Jint
 
         internal static Dictionary<Type, Func<Engine, object, JsValue>> TypeMappers = new()
         {
-            { typeof(bool), (engine, v) => (bool) v ? JsBoolean.True : JsBoolean.False },
+            { typeof(bool), (engine, v) => (bool)v ? JsBoolean.True : JsBoolean.False },
             { typeof(byte), (engine, v) => JsNumber.Create((byte)v) },
             { typeof(char), (engine, v) => JsString.Create((char)v) },
             { typeof(DateTime), (engine, v) => engine.Date.Construct((DateTime)v) },
             { typeof(DateTimeOffset), (engine, v) => engine.Date.Construct((DateTimeOffset)v) },
-            { typeof(decimal), (engine, v) => (JsValue) (double)(decimal)v },
+            { typeof(decimal), (engine, v) => (JsValue)(double)(decimal)v },
             { typeof(double), (engine, v) => (JsValue)(double)v },
             { typeof(Int16), (engine, v) => JsNumber.Create((Int16)v) },
             { typeof(Int32), (engine, v) => JsNumber.Create((Int32)v) },
             { typeof(Int64), (engine, v) => (JsValue)(Int64)v },
             { typeof(SByte), (engine, v) => JsNumber.Create((SByte)v) },
             { typeof(Single), (engine, v) => (JsValue)(Single)v },
-            { typeof(string), (engine, v) => JsString.Create((string) v) },
+            { typeof(string), (engine, v) => JsString.Create((string)v) },
             { typeof(UInt16), (engine, v) => JsNumber.Create((UInt16)v) },
             { typeof(UInt32), (engine, v) => JsNumber.Create((UInt32)v) },
             { typeof(UInt64), (engine, v) => JsNumber.Create((UInt64)v) },
@@ -115,7 +125,7 @@ namespace Jint
         /// <summary>
         /// Constructs a new engine instance.
         /// </summary>
-        public Engine() : this((Action<Options>) null)
+        public Engine() : this((Action<Options>)null)
         {
         }
 
@@ -146,7 +156,7 @@ namespace Jint
 
             Object = ObjectConstructor.CreateObjectConstructor(this);
             Function = FunctionConstructor.CreateFunctionConstructor(this);
-            _callerCalleeArgumentsThrowerConfigurable = new GetSetPropertyDescriptor.ThrowerPropertyDescriptor(this,  PropertyFlag.Configurable | PropertyFlag.CustomJsValue, "'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them");
+            _callerCalleeArgumentsThrowerConfigurable = new GetSetPropertyDescriptor.ThrowerPropertyDescriptor(this, PropertyFlag.Configurable | PropertyFlag.CustomJsValue, "'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them");
             _callerCalleeArgumentsThrowerNonConfigurable = new GetSetPropertyDescriptor.ThrowerPropertyDescriptor(this, PropertyFlag.CustomJsValue, "'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them");
 
             Symbol = SymbolConstructor.CreateSymbolConstructor(this);
@@ -359,7 +369,7 @@ namespace Jint
                     GlobalEnvironment);
 
                 var list = new JintStatementList(this, null, program.Body);
-                
+
                 var result = list.Execute();
                 if (result.Type == CompletionType.Throw)
                 {
@@ -417,7 +427,7 @@ namespace Jint
 
             if (!(value is Reference reference))
             {
-                return ((Completion) value).Value;
+                return ((Completion)value).Value;
             }
 
             return GetValue(reference, returnReferenceToPool);
@@ -442,7 +452,7 @@ namespace Jint
             {
                 return baseValue;
             }
-            
+
             if (reference.IsPropertyReference())
             {
                 var property = reference.GetReferencedName();
@@ -491,7 +501,7 @@ namespace Jint
                         return Undefined.Instance;
                     }
 
-                    var callable = (ICallable) getter.AsObject();
+                    var callable = (ICallable)getter.AsObject();
                     return callable.Call(baseValue, Arguments.Empty);
                 }
             }
@@ -515,7 +525,7 @@ namespace Jint
         {
             if (property == CommonProperties.Length)
             {
-                jsValue = JsNumber.Create((uint) s.Length);
+                jsValue = JsNumber.Create((uint)s.Length);
                 return true;
             }
 
@@ -557,7 +567,6 @@ namespace Jint
                 {
                     ExceptionHelper.ThrowReferenceError(this, reference);
                 }
-
                 Global.Set(reference.GetReferencedName(), value, throwOnError: false);
             }
             else if (reference.IsPropertyReference())
@@ -575,16 +584,16 @@ namespace Jint
             }
             else
             {
-                ((EnvironmentRecord) baseValue).SetMutableBinding(TypeConverter.ToString(reference.GetReferencedName()), value, reference.IsStrictReference());
+                ((EnvironmentRecord)baseValue).SetMutableBinding(TypeConverter.ToString(reference.GetReferencedName()), value, reference.IsStrictReference());
             }
         }
-        
+
         /// <summary>
         /// http://www.ecma-international.org/ecma-262/6.0/#sec-initializereferencedbinding
         /// </summary>
         public void InitializeReferenceBinding(Reference reference, JsValue value)
         {
-            var baseValue = (EnvironmentRecord) reference.GetBase();
+            var baseValue = (EnvironmentRecord)reference.GetBase();
             baseValue.InitializeBinding(TypeConverter.ToString(reference.GetReferencedName()), value);
         }
 
@@ -653,7 +662,11 @@ namespace Jint
         /// <param name="propertyName">The name of the property to return.</param>
         public JsValue GetValue(string propertyName)
         {
-            return GetValue(Global, new JsString(propertyName));
+            var range = GetLastSyntaxNode()?.Range;
+            var result = GetValue(Global, new JsString(propertyName));
+            var log = $"位置:{range}调用:Global-{propertyName},返回:{result}";
+            Console.WriteLine(log);
+            return result;
         }
 
         /// <summary>
@@ -676,7 +689,7 @@ namespace Jint
             _referencePool.Return(reference);
             return jsValue;
         }
-        
+
         /// <summary>
         /// https://tc39.es/ecma262/#sec-resolvebinding
         /// </summary>
@@ -732,7 +745,7 @@ namespace Jint
             var envRec = GetThisEnvironment();
             return envRec.GetThisBinding();
         }
-        
+
         /// <summary>
         /// https://tc39.es/ecma262/#sec-globaldeclarationinstantiation
         /// </summary>
@@ -740,13 +753,13 @@ namespace Jint
             Script script,
             LexicalEnvironment env)
         {
-            var envRec = (GlobalEnvironmentRecord) env._record;
+            var envRec = (GlobalEnvironmentRecord)env._record;
 
             var hoistingScope = HoistingScope.GetProgramLevelDeclarations(script);
             var functionDeclarations = hoistingScope._functionDeclarations;
             var varDeclarations = hoistingScope._variablesDeclarations;
             var lexDeclarations = hoistingScope._lexicalDeclarations;
-            
+
             var functionToInitialize = new LinkedList<FunctionDeclaration>();
             var declaredFunctionNames = new HashSet<string>();
             var declaredVarNames = new List<string>();
@@ -806,13 +819,13 @@ namespace Jint
                     for (var j = 0; j < boundNames.Count; j++)
                     {
                         var dn = boundNames[j];
-                        if (envRec.HasVarDeclaration(dn) 
+                        if (envRec.HasVarDeclaration(dn)
                             || envRec.HasLexicalDeclaration(dn)
                             || envRec.HasRestrictedGlobalProperty(dn))
                         {
                             ExceptionHelper.ThrowSyntaxError(this, $"Identifier '{dn}' has already been declared");
                         }
-                        
+
                         if (d.Kind == VariableDeclarationKind.Const)
                         {
                             envRec.CreateImmutableBinding(dn, strict: true);
@@ -849,7 +862,7 @@ namespace Jint
         {
             var func = functionInstance._functionDefinition;
 
-            var envRec = (FunctionEnvironmentRecord) env._record;
+            var envRec = (FunctionEnvironmentRecord)env._record;
             var strict = StrictModeScope.IsStrictModeCode;
 
             var configuration = func.Initialize(this, functionInstance);
@@ -874,10 +887,10 @@ namespace Jint
                     // any parameter default value initializers, or any destructured parameters.
                     ao = CreateMappedArgumentsObject(functionInstance, parameterNames, argumentsList, envRec, configuration.HasRestParameter);
                 }
-                if(_executionContexts.Last(out ExecutionContext executionContext)&& executionContext.VariableEnvironment._record is FunctionEnvironmentRecord fer)
+                if (_executionContexts.Last(out ExecutionContext executionContext) && executionContext.VariableEnvironment._record is FunctionEnvironmentRecord fer)
                 {
-                    var callee=ao.Get(CommonProperties.Callee);
-                    if(callee is ScriptFunctionInstance sfi&& fer.GetBindingValue(CommonProperties.Arguments._value, true).Get(CommonProperties.Callee) is ScriptFunctionInstance psfi)
+                    var callee = ao.Get(CommonProperties.Callee);
+                    if (callee is ScriptFunctionInstance sfi && fer.GetBindingValue(CommonProperties.Arguments._value, false).Get(CommonProperties.Callee) is ScriptFunctionInstance psfi)
                     {
                         sfi.SetOwnProperty(CommonProperties.Caller, new PropertyDescriptor(psfi, PropertyFlag.Configurable));
                     }
@@ -897,7 +910,7 @@ namespace Jint
                 // slower set
                 envRec.AddFunctionParameters(func.Function, argumentsList);
             }
-            
+
             // Let iteratorRecord be CreateListIteratorRecord(argumentsList).
             // If hasDuplicates is true, then
             //     Perform ? IteratorBindingInitialization for formals with iteratorRecord and undefined as arguments.
@@ -923,8 +936,8 @@ namespace Jint
                 // NOTE: A separate Environment Record is needed to ensure that closures created by expressions
                 // in the formal parameter list do not have visibility of declarations in the function body.
                 varEnv = LexicalEnvironment.NewDeclarativeEnvironment(this, env);
-                varEnvRec = (DeclarativeEnvironmentRecord) varEnv._record;
-                
+                varEnvRec = (DeclarativeEnvironmentRecord)varEnv._record;
+
                 UpdateVariableEnvironment(varEnv);
 
                 for (var i = 0; i < configuration.VarsToInitialize.Count; i++)
@@ -934,7 +947,7 @@ namespace Jint
                     varEnvRec.CreateMutableBindingAndInitialize(pair.Name, canBeDeleted: false, initialValue);
                 }
             }
-            
+
             // NOTE: Annex B.3.3.1 adds additional steps at this point. 
             // A https://tc39.es/ecma262/#sec-web-compat-functiondeclarationinstantiation
 
@@ -953,7 +966,7 @@ namespace Jint
             }
 
             var lexEnvRec = lexEnv._record;
-            
+
             UpdateLexicalEnvironment(lexEnv);
 
             if (configuration.LexicalDeclarations.Length > 0)
@@ -983,7 +996,7 @@ namespace Jint
         }
 
         private static void InitializeLexicalDeclarations(
-            JintFunctionDefinition.State.LexicalVariableDeclaration[] lexicalDeclarations, 
+            JintFunctionDefinition.State.LexicalVariableDeclaration[] lexicalDeclarations,
             EnvironmentRecord lexEnvRec)
         {
             foreach (var d in lexicalDeclarations)
@@ -1004,9 +1017,9 @@ namespace Jint
         }
 
         private ArgumentsInstance CreateMappedArgumentsObject(
-            FunctionInstance func, 
+            FunctionInstance func,
             Key[] formals,
-            JsValue[] argumentsList, 
+            JsValue[] argumentsList,
             DeclarativeEnvironmentRecord envRec,
             bool hasRestParameter)
         {
@@ -1028,8 +1041,8 @@ namespace Jint
             bool strict)
         {
             var hoistingScope = HoistingScope.GetProgramLevelDeclarations(script);
-            
-            var lexEnvRec = (DeclarativeEnvironmentRecord) lexEnv._record;
+
+            var lexEnvRec = (DeclarativeEnvironmentRecord)lexEnv._record;
             var varEnvRec = varEnv._record;
 
             if (!strict && hoistingScope._variablesDeclarations != null)
@@ -1040,7 +1053,7 @@ namespace Jint
                     for (var i = 0; i < nodes.Count; i++)
                     {
                         var variablesDeclaration = nodes[i];
-                        var identifier = (Identifier) variablesDeclaration.Declarations[0].Id;
+                        var identifier = (Identifier)variablesDeclaration.Declarations[0].Id;
                         if (globalEnvironmentRecord.HasLexicalDeclaration(identifier.Name))
                         {
                             ExceptionHelper.ThrowSyntaxError(this, "Identifier '" + identifier.Name + "' has already been declared");
@@ -1058,7 +1071,7 @@ namespace Jint
                         for (var i = 0; i < nodes.Count; i++)
                         {
                             var variablesDeclaration = nodes[i];
-                            var identifier = (Identifier) variablesDeclaration.Declarations[0].Id;
+                            var identifier = (Identifier)variablesDeclaration.Declarations[0].Id;
                             if (thisEnvRec.HasBinding(identifier.Name))
                             {
                                 ExceptionHelper.ThrowSyntaxError(this);
@@ -1069,7 +1082,7 @@ namespace Jint
                     thisLex = thisLex._outer;
                 }
             }
-            
+
             var functionDeclarations = hoistingScope._functionDeclarations;
             var functionsToInitialize = new LinkedList<FunctionDeclaration>();
             var declaredFunctionNames = new HashSet<string>();
@@ -1123,7 +1136,7 @@ namespace Jint
                     }
                 }
             }
-            
+
             var lexicalDeclarations = hoistingScope._lexicalDeclarations;
             var lexicalDeclarationsCount = lexicalDeclarations?.Count;
             for (var i = 0; i < lexicalDeclarationsCount; i++)

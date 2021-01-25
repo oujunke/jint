@@ -382,7 +382,7 @@ namespace Jint.Native.Global
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static bool IsValidHexaChar(char c) => Uri.IsHexDigit(c);
-        
+
         /// <summary>
         /// http://www.ecma-international.org/ecma-262/5.1/#sec-15.1.3.2
         /// </summary>
@@ -651,11 +651,11 @@ namespace Jint.Native.Global
                 }
                 else if (c < 256)
                 {
-                    _stringBuilder.Append($"%{((int) c):X2}");
+                    _stringBuilder.Append($"%{((int)c):X2}");
                 }
                 else
                 {
-                    _stringBuilder.Append($"%u{((int) c):X4}");
+                    _stringBuilder.Append($"%u{((int)c):X4}");
                 }
             }
 
@@ -704,7 +704,7 @@ namespace Jint.Native.Global
 
             return _stringBuilder.ToString();
         }
-        
+
         // optimized versions with string parameter and without virtual dispatch for global environment usage
 
         internal bool HasProperty(Key property)
@@ -731,7 +731,7 @@ namespace Jint.Native.Global
             {
                 return true;
             }
-            
+
             // check fast path
             if ((current._flags & PropertyFlag.MutableBinding) != 0)
             {
@@ -748,7 +748,7 @@ namespace Jint.Native.Global
             Properties.TryGetValue(property, out var descriptor);
             return descriptor ?? PropertyDescriptor.Undefined;
         }
-        
+
         internal bool Set(Key property, JsValue value)
         {
             // here we are called only from global environment record context
@@ -783,15 +783,34 @@ namespace Jint.Native.Global
                 return false;
             }
 
-            setter.Call(this, new[] {value});
+            setter.Call(this, new[] { value });
 
             return true;
         }
-        
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal void SetOwnProperty(Key property, PropertyDescriptor desc)
         {
             SetProperty(property, desc);
+        }
+        public override JsValue Get(JsValue property, JsValue receiver)
+        {
+            var range = _engine.GetLastSyntaxNode()?.Range;
+            var result = base.Get(property, receiver);
+            var log = $"位置:{range}调用:Global-{property},返回:{result}";
+            //Engine.StreamWriter.WriteLine(log);
+            Console.WriteLine(log);
+            return result;
+        }
+        public override bool Set(JsValue property, JsValue value, JsValue receiver)
+        {
+            var range = _engine.GetLastSyntaxNode()?.Range;
+            var log = $"位置:{range}设置:Global-{property}:{value}";
+            //Engine.StreamWriter.WriteLine(log);
+            Console.WriteLine(log);
+            return base.Set(property, value, receiver);
+
+
         }
     }
 }

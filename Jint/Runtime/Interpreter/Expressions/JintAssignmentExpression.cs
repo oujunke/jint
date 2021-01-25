@@ -214,7 +214,10 @@ namespace Jint.Runtime.Interpreter.Expressions
                     {
                         ((FunctionInstance) rval).SetFunctionName(left._expressionName.StringValue);
                     }
-
+                    if(rval is Native.Object.ObjectInstance obj&&string.IsNullOrWhiteSpace(obj.ReferenceName))
+                    {
+                        obj.ReferenceName = left._expressionName.StringValue?._value;
+                    }
                     environmentRecord.SetMutableBinding(left._expressionName, rval, strict);
                     return rval;
                 }
