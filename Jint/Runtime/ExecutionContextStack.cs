@@ -34,6 +34,8 @@ namespace Jint.Runtime
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Push(in ExecutionContext context) => _stack.Push(in context);
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool Last(out ExecutionContext executionContext) => _stack.Last(out executionContext);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ref readonly ExecutionContext Pop() => ref _stack.Pop();

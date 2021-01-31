@@ -73,7 +73,17 @@ namespace Jint.Collections
 
             _array[_size++] = item;
         }
-
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool Last(out T executionContext)
+        {
+            if (_size < 3)
+            {
+                executionContext = default;
+                return false;
+            }
+            executionContext = _array[_size - 2];
+            return true;
+        }
         private void EnsureCapacity(int min)
         {
             var array = _array;
