@@ -111,9 +111,6 @@ namespace Jint
             { typeof(UInt16), (engine, v) => JsNumber.Create((UInt16)v) },
             { typeof(UInt32), (engine, v) => JsNumber.Create((UInt32)v) },
             { typeof(UInt64), (engine, v) => JsNumber.Create((UInt64)v) },
-            { typeof(UInt16), (engine, v) => JsNumber.Create((UInt16)v) },
-            { typeof(UInt32), (engine, v) => JsNumber.Create((UInt32)v) },
-            { typeof(UInt64), (engine, v) => JsNumber.Create((UInt64)v) },
             { typeof(System.Text.RegularExpressions.Regex), (engine, v) => engine.RegExp.Construct((System.Text.RegularExpressions.Regex)v, "") }
         };
 
@@ -684,7 +681,7 @@ namespace Jint
         /// <summary>
         /// Gets the last evaluated <see cref="Node"/>.
         /// </summary>
-        internal Node GetLastSyntaxNode()
+        public Node GetLastSyntaxNode()
         {
             return _lastSyntaxNode;
         }
