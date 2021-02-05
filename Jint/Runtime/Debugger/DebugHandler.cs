@@ -120,8 +120,12 @@ namespace Jint.Runtime.Debugger
 
             bool afterStart, beforeEnd;
 
+            if (breakpoint.Char == -1 && breakpoint.Line == statement.Location.Start.Line)
+            {
+                return true;
+            }
             afterStart = (breakpoint.Line == statement.Location.Start.Line &&
-                             breakpoint.Char >= statement.Location.Start.Column);
+                         breakpoint.Char >= statement.Location.Start.Column);
 
             if (!afterStart)
             {
@@ -140,7 +144,7 @@ namespace Jint.Runtime.Debugger
             if (!string.IsNullOrEmpty(breakpoint.Condition))
             {
                 var completionValue = _engine.Execute(breakpoint.Condition).GetCompletionValue();
-                return ((JsBoolean) completionValue)._value;
+                return ((JsBoolean)completionValue)._value;
             }
 
             return true;
@@ -181,7 +185,7 @@ namespace Jint.Runtime.Debugger
         private static Dictionary<string, JsValue> GetGlobalVariables(ExecutionContext context)
         {
             Dictionary<string, JsValue> globals = new Dictionary<string, JsValue>();
-            
+
             // Unless we're in the global scope (_outer is null), don't include function local variables.
             // The function local variables are in the variable environment (function scope) and any current
             // lexical environment (block scope), which will be a "child" of that VariableEnvironment.

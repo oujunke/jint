@@ -5,7 +5,7 @@ using System.Runtime.CompilerServices;
 
 namespace Jint.Collections
 {
-    internal class HybridDictionary<TValue> : IEnumerable<KeyValuePair<Key, TValue>>
+    public class HybridDictionary<TValue> : IEnumerable<KeyValuePair<Key, TValue>>
     {
         private const int CutoverPoint = 9;
         private const int InitialDictionarySize = 13;
@@ -193,7 +193,7 @@ namespace Jint.Collections
 
             return _list != null && _list.Remove(key);
         }
-        
+
         /// <summary>
         /// Optimization when no need to check for existing items.
         /// </summary>

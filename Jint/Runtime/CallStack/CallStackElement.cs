@@ -10,21 +10,21 @@ namespace Jint.Runtime.CallStack
     internal readonly struct CallStackElement
     {
         public CallStackElement(
-            FunctionInstance function,
+            IFunctionInstance function,
             JintExpression expression)
         {
             Function = function;
             Expression = expression;
         }
 
-        public readonly FunctionInstance Function;
+        public readonly IFunctionInstance Function;
         public readonly JintExpression? Expression;
 
         public Location Location =>
-            Expression?._expression.Location ?? ((Node?) Function._functionDefinition?.Function)?.Location ?? default;
+            Expression?._expression.Location ?? ((Node?) Function.FunctionDefinition?.Function)?.Location ?? default;
 
         public NodeList<Expression>? Arguments =>
-            Function._functionDefinition?.Function.Params;
+            Function.FunctionDefinition?.Function.Params;
 
         public override string ToString()
         {

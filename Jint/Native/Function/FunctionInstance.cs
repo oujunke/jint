@@ -10,7 +10,7 @@ using Jint.Runtime.Interpreter;
 
 namespace Jint.Native.Function
 {
-    public abstract class FunctionInstance : ObjectInstance, ICallable
+    public abstract class FunctionInstance : ObjectInstance, IFunctionInstance
     {
         protected PropertyDescriptor _prototypeDescriptor;
 
@@ -69,6 +69,8 @@ namespace Jint.Native.Function
         public bool Strict => _thisMode == FunctionThisMode.Strict;
 
         internal override bool IsConstructor => this is IConstructor;
+
+        JintFunctionDefinition IFunctionInstance.FunctionDefinition => _functionDefinition;
 
         public virtual bool HasInstance(JsValue v)
         {

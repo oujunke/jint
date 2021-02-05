@@ -10,10 +10,10 @@ namespace Jint.Runtime.Interpreter
     /// <summary>
     /// Works as memento for function execution. Optimization to cache things that don't change.
     /// </summary>
-    internal sealed class JintFunctionDefinition
+    public sealed class JintFunctionDefinition
     {
         private readonly Engine _engine;
-        
+
         private JintExpression _bodyExpression;
         private JintStatementList _bodyStatementList;
 
@@ -36,7 +36,7 @@ namespace Jint.Runtime.Interpreter
             {
                 // Esprima doesn't detect strict at the moment for
                 // language/expressions/object/method-definition/name-invoke-fn-strict.js
-                var blockStatement = (BlockStatement) function.Body;
+                var blockStatement = (BlockStatement)function.Body;
                 ref readonly var statements = ref blockStatement.Body;
                 for (int i = 0; i < statements.Count; ++i)
                 {
@@ -52,12 +52,12 @@ namespace Jint.Runtime.Interpreter
         {
             if (Function.Expression)
             {
-                _bodyExpression ??= JintExpression.Build(_engine, (Expression) Function.Body);
+                _bodyExpression ??= JintExpression.Build(_engine, (Expression)Function.Body);
                 var jsValue = _bodyExpression?.GetValue() ?? Undefined.Instance;
                 return new Completion(CompletionType.Return, jsValue, null, Function.Body.Location);
             }
 
-            var blockStatement = (BlockStatement) Function.Body;
+            var blockStatement = (BlockStatement)Function.Body;
             _bodyStatementList ??= new JintStatementList(_engine, blockStatement, blockStatement.Body);
             return _bodyStatementList.Execute();
         }
@@ -99,7 +99,7 @@ namespace Jint.Runtime.Interpreter
         private State DoInitialize(FunctionInstance functionInstance)
         {
             var state = new State();
-            
+
             ProcessParameters(Function, state, out var hasArguments);
 
             var hoistingScope = HoistingScope.GetFunctionLevelDeclarations(Function, collectVarNames: true, collectLexicalNames: true);
@@ -144,7 +144,7 @@ namespace Jint.Runtime.Interpreter
                     state.ArgumentsObjectNeeded = false;
                 }
             }
-            
+
             var parameterBindings = new HashSet<Key>(state.ParameterNames);
             if (state.ArgumentsObjectNeeded)
             {
@@ -175,10 +175,10 @@ namespace Jint.Runtime.Interpreter
             }
             else
             {
-                var instantiatedVarNames = state.VarNames != null 
-                    ? new HashSet<Key>(state.ParameterBindings) 
+                var instantiatedVarNames = state.VarNames != null
+                    ? new HashSet<Key>(state.ParameterBindings)
                     : null;
-                
+
                 for (var i = 0; i < state.VarNames?.Count; i++)
                 {
                     var n = state.VarNames[i];
@@ -219,16 +219,16 @@ namespace Jint.Runtime.Interpreter
                 }
                 state.LexicalDeclarations = declarations;
             }
-            
+
             return state;
         }
 
         private static void GetBoundNames(
             Expression parameter,
-            List<Key> target, 
-            bool checkDuplicates, 
-            ref bool _hasRestParameter, 
-            ref bool _hasParameterExpressions, 
+            List<Key> target,
+            bool checkDuplicates,
+            ref bool _hasRestParameter,
+            ref bool _hasParameterExpressions,
             ref bool _hasDuplicates,
             ref bool hasArguments)
         {
@@ -258,7 +258,7 @@ namespace Jint.Runtime.Interpreter
                     {
                         var expression = arrayPatternElements[i];
                         GetBoundNames(
-                            expression, 
+                            expression,
                             target,
                             checkDuplicates,
                             ref _hasRestParameter,
@@ -277,7 +277,7 @@ namespace Jint.Runtime.Interpreter
                         if (property is Property p)
                         {
                             GetBoundNames(
-                                p.Value, 
+                                p.Value,
                                 target,
                                 checkDuplicates,
                                 ref _hasRestParameter,
@@ -289,7 +289,7 @@ namespace Jint.Runtime.Interpreter
                         {
                             _hasRestParameter = true;
                             _hasParameterExpressions = true;
-                            parameter = ((RestElement) property).Argument;
+                            parameter = ((RestElement)property).Argument;
                             continue;
                         }
                     }
@@ -311,7 +311,7 @@ namespace Jint.Runtime.Interpreter
             out bool hasArguments)
         {
             hasArguments = false;
-            state.IsSimpleParameterList  = true;
+            state.IsSimpleParameterList = true;
 
             ref readonly var functionDeclarationParams = ref function.Params;
             var count = functionDeclarationParams.Count;
@@ -333,11 +333,11 @@ namespace Jint.Runtime.Interpreter
                 {
                     state.IsSimpleParameterList = false;
                     GetBoundNames(
-                        parameter, 
+                        parameter,
                         parameterNames,
                         checkDuplicates: true,
                         ref state.HasRestParameter,
-                        ref state.HasParameterExpressions, 
+                        ref state.HasParameterExpressions,
                         ref state.HasDuplicates,
                         ref hasArguments);
                 }

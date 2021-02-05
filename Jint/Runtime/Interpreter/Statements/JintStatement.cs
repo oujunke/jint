@@ -29,7 +29,7 @@ namespace Jint.Runtime.Interpreter.Statements
             _statement = statement;
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        //[MethodImpl(MethodImplOptions.AggressiveInlining)]
         public Completion Execute()
         {
             if (_statement.Type != Nodes.BlockStatement)

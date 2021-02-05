@@ -45,7 +45,7 @@ namespace Jint
         {
             AdaptRegexp = true,
             Tolerant = true,
-            Loc = true
+            //Loc = true
         };
 
         private static readonly JsString _errorFunctionName = new JsString("Error");
@@ -1235,7 +1235,7 @@ namespace Jint
 
         internal JsValue Call(ICallable callable, JsValue thisObject, JsValue[] arguments, JintExpression expression)
         {
-            if (callable is FunctionInstance functionInstance)
+            if (callable is IFunctionInstance functionInstance)
             {
                 return Call(functionInstance, thisObject, arguments, expression);
             }
@@ -1254,7 +1254,7 @@ namespace Jint
         }
 
         internal JsValue Call(
-            FunctionInstance functionInstance,
+            IFunctionInstance functionInstance,
             JsValue thisObject,
             JsValue[] arguments,
             JintExpression expression)
@@ -1271,7 +1271,7 @@ namespace Jint
 
             if (_isDebugMode)
             {
-                DebugHandler.AddToDebugCallStack(functionInstance);
+                DebugHandler.AddToDebugCallStack((ObjectInstance)functionInstance);
             }
 
             var result = functionInstance.Call(thisObject, arguments);

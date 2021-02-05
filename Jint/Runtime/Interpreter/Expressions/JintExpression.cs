@@ -34,7 +34,7 @@ namespace Jint.Runtime.Interpreter.Expressions
             return _engine.GetValue(Evaluate(), true);
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        //[MethodImpl(MethodImplOptions.AggressiveInlining)]
         public object Evaluate()
         {
             _engine._lastSyntaxNode = _expression;
