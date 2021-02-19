@@ -1,5 +1,6 @@
 using Esprima.Ast;
 using Jint.Runtime.Environments;
+using System.Threading;
 
 namespace Jint.Runtime.Interpreter.Statements
 {
@@ -40,6 +41,7 @@ namespace Jint.Runtime.Interpreter.Statements
                     var oldEnv = _engine.ExecutionContext.LexicalEnvironment;
                     var catchEnv = LexicalEnvironment.NewDeclarativeEnvironment(_engine, oldEnv);
                     var catchEnvRecord = (DeclarativeEnvironmentRecord) catchEnv._record;
+                    LogUtils.Log($"线程:{Thread.CurrentThread.ManagedThreadId}-位置:{b.Location.Start}-{b.Location.End}:出现异常:{b.Value}");
                     catchEnvRecord.CreateMutableBindingAndInitialize(_catchParamName, canBeDeleted: false, c);
 
                     _engine.UpdateLexicalEnvironment(catchEnv);

@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Threading;
 using Jint.Collections;
 using Jint.Native.Object;
 using Jint.Native.String;
@@ -797,17 +798,17 @@ namespace Jint.Native.Global
         {
             var range = _engine.GetLastSyntaxNode()?.Range;
             var result = base.Get(property, receiver);
-            var log = $"位置:{range}调用:Global-{property},返回:{result}";
+            var log = $"线程:{Thread.CurrentThread.ManagedThreadId}-位置:{range}调用:Global-{property},返回:{result}";
             //Engine.StreamWriter.WriteLine(log);
-            Console.WriteLine(log);
+            LogUtils.Log(log);
             return result;
         }
         public override bool Set(JsValue property, JsValue value, JsValue receiver)
         {
             var range = _engine.GetLastSyntaxNode()?.Range;
-            var log = $"位置:{range}设置:Global-{property}:{value}";
+            var log = $"线程:{Thread.CurrentThread.ManagedThreadId}-位置:{range}设置:Global-{property}:{value}";
             //Engine.StreamWriter.WriteLine(log);
-            Console.WriteLine(log);
+            LogUtils.Log(log);
             return base.Set(property, value, receiver);
 
 

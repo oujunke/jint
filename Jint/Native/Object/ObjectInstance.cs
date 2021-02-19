@@ -500,7 +500,7 @@ namespace Jint.Native.Object
                 return false;
             }
 
-            var functionInstance = (FunctionInstance)setter;
+            var functionInstance = (IFunctionInstance)setter;
             _engine.Call(functionInstance, receiver, new[] { value }, expression: null);
 
             return true;
@@ -1321,4 +1321,4 @@ namespace Jint.Native.Object
             return false;
         }
     }
-}
+}          

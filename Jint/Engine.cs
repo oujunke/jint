@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using System.Threading.Tasks;
 using Esprima;
 using Esprima.Ast;
@@ -36,6 +37,7 @@ using Jint.Runtime.Interop.Reflection;
 using Jint.Runtime.Interpreter;
 using Jint.Runtime.Interpreter.Expressions;
 using Jint.Runtime.References;
+using ExecutionContext = Jint.Runtime.Environments.ExecutionContext;
 
 namespace Jint
 {
@@ -45,7 +47,7 @@ namespace Jint
         {
             AdaptRegexp = true,
             Tolerant = true,
-            //Loc = true
+            Loc = true
         };
 
         private static readonly JsString _errorFunctionName = new JsString("Error");
@@ -56,7 +58,21 @@ namespace Jint
         private static readonly JsString _typeErrorFunctionName = new JsString("TypeError");
         private static readonly JsString _uriErrorFunctionName = new JsString("URIError");
 
-        private readonly ExecutionContextStack _executionContexts;
+        private readonly ExecutionContextStack _executionContexts123;
+        private Dictionary<int, ExecutionContextStack> ExecutionContextStackDictionary = new Dictionary<int, ExecutionContextStack>();
+        public ExecutionContextStack ExecutionContextStack
+        {
+            get{
+                if (ExecutionContextStackDictionary.ContainsKey(Thread.CurrentThread.ManagedThreadId))
+                {
+                    return ExecutionContextStackDictionary[Thread.CurrentThread.ManagedThreadId];
+                }
+                else
+                {
+                    return _executionContexts123;
+                }
+            }
+        }
         private JsValue _completionValue = JsValue.Undefined;
         internal Node _lastSyntaxNode;
 
@@ -150,8 +166,8 @@ namespace Jint
         /// <remarks>The provided engine instance in callback is not guaranteed to be fully configured</remarks>
         public Engine(Action<Engine, Options> options)
         {
-            _executionContexts = new ExecutionContextStack(2);
-
+            _executionContexts123 = new ExecutionContextStack(2);
+            ExecutionContextStackDictionary.Add(Thread.CurrentThread.ManagedThreadId, _executionContexts123);
             Global = GlobalObject.CreateGlobalObject(this);
 
             Object = ObjectConstructor.CreateObjectConstructor(this);
@@ -244,7 +260,7 @@ namespace Jint
         public ref readonly ExecutionContext ExecutionContext
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => ref _executionContexts.Peek();
+            get => ref ExecutionContextStack.Peek();
         }
         public GlobalSymbolRegistry GlobalSymbolRegistry { get; }
 
@@ -281,10 +297,20 @@ namespace Jint
                 lexicalEnvironment,
                 variableEnvironment);
 
-            _executionContexts.Push(context);
+            ExecutionContextStack.Push(context);
             return context;
         }
-
+        public void EnterAsyncExecutionContext(ExecutionContextStack executionContextStack)
+        {
+            if (!ExecutionContextStackDictionary.ContainsKey(Thread.CurrentThread.ManagedThreadId))
+            {
+                ExecutionContextStackDictionary.Add(Thread.CurrentThread.ManagedThreadId, executionContextStack);
+            }
+        }
+        public void LeaveEnterAsyncExecutionContext()
+        {
+            ExecutionContextStackDictionary.Remove(Thread.CurrentThread.ManagedThreadId);
+        }
         public Engine SetValue(JsValue name, Delegate value)
         {
             Global.FastAddProperty(name, new DelegateWrapper(this, value), true, false, true);
@@ -324,7 +350,7 @@ namespace Jint
 
         public void LeaveExecutionContext()
         {
-            _executionContexts.Pop();
+            ExecutionContextStack.Pop();
         }
 
         /// <summary>
@@ -673,8 +699,8 @@ namespace Jint
         {
             var range = GetLastSyntaxNode()?.Range;
             var result = GetValue(Global, new JsString(propertyName));
-            var log = $"位置:{range}调用:Global-{propertyName},返回:{result}";
-            Console.WriteLine(log);
+            var log = $"线程:{Thread.CurrentThread.ManagedThreadId}-位置:{range}调用:Global-{propertyName},返回:{result}";
+            LogUtils.Log(log);
             return result;
         }
 
@@ -809,7 +835,7 @@ namespace Jint
                         {
                             ExceptionHelper.ThrowSyntaxError(this, $"Identifier '{vn}' has already been declared");
                         }
-                        
+
                         if (!declaredFunctionNames.Contains(vn))
                         {
                             var vnDefinable = envRec.CanDeclareGlobalVar(vn);
@@ -856,12 +882,12 @@ namespace Jint
             foreach (var f in functionToInitialize)
             {
                 var fn = f.Id!.Name;
-                
+
                 if (envRec.HasLexicalDeclaration(fn))
                 {
                     ExceptionHelper.ThrowSyntaxError(this, $"Identifier '{fn}' has already been declared");
                 }
-                
+
                 var fo = Function.CreateFunctionObject(f, env);
                 envRec.CreateGlobalFunctionBinding(fn, fo, canBeDeleted: false);
             }
@@ -908,7 +934,7 @@ namespace Jint
                     // any parameter default value initializers, or any destructured parameters.
                     ao = CreateMappedArgumentsObject(functionInstance, parameterNames, argumentsList, envRec, configuration.HasRestParameter);
                 }
-                if (_executionContexts.Last(out ExecutionContext executionContext) && executionContext.VariableEnvironment._record is FunctionEnvironmentRecord fer)
+                if (ExecutionContextStack.Last(out ExecutionContext executionContext) && executionContext.VariableEnvironment._record is FunctionEnvironmentRecord fer)
                 {
                     var callee = ao.Get(CommonProperties.Callee);
                     if (callee is ScriptFunctionInstance sfi && fer.GetBindingValue(CommonProperties.Arguments._value, false).Get(CommonProperties.Callee) is ScriptFunctionInstance psfi)
@@ -1224,13 +1250,13 @@ namespace Jint
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal void UpdateLexicalEnvironment(LexicalEnvironment newEnv)
         {
-            _executionContexts.ReplaceTopLexicalEnvironment(newEnv);
+            ExecutionContextStack.ReplaceTopLexicalEnvironment(newEnv);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal void UpdateVariableEnvironment(LexicalEnvironment newEnv)
         {
-            _executionContexts.ReplaceTopVariableEnvironment(newEnv);
+            ExecutionContextStack.ReplaceTopVariableEnvironment(newEnv);
         }
 
         internal JsValue Call(ICallable callable, JsValue thisObject, JsValue[] arguments, JintExpression expression)
@@ -1239,7 +1265,7 @@ namespace Jint
             {
                 return Call(functionInstance, thisObject, arguments, expression);
             }
-            
+
             return callable.Call(thisObject, arguments);
         }
 
@@ -1249,7 +1275,7 @@ namespace Jint
             {
                 return Construct(functionInstance, arguments, newTarget, expression);
             }
-            
+
             return constructor.Construct(arguments, newTarget);
         }
 
@@ -1280,8 +1306,15 @@ namespace Jint
             {
                 DebugHandler.PopDebugCallStack();
             }
-
-            CallStack.Pop();
+            try
+            {
+                CallStack.Pop();
+            }
+            catch (Exception ex2)
+            {
+                LogUtils.Log($"出现异常:{ex2}");
+            }
+            
 
             return result;
         }
@@ -1307,7 +1340,7 @@ namespace Jint
                 DebugHandler.AddToDebugCallStack(functionInstance);
             }
 
-            var result = ((IConstructor) functionInstance).Construct(arguments, newTarget);
+            var result = ((IConstructor)functionInstance).Construct(arguments, newTarget);
 
             if (_isDebugMode)
             {

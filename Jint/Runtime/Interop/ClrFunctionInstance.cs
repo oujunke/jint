@@ -70,6 +70,10 @@ namespace Jint.Runtime.Interop
 
         public override string ToString()
         {
+            //if (FunctionDeclaration is Esprima.Ast.FunctionExpression fx)
+            //{
+            //    return fx.Location.Source?.Substring(fx.Range.Start, fx.Range.End - fx.Range.Start).Replace("\r\n", "\n").Replace("\n", "\r\n");
+            //}
             return $"function {_name}() {{ [native code] }}";
         }
     }

@@ -1,12 +1,13 @@
 #nullable enable
 
+using System;
 using System.Runtime.CompilerServices;
 using Jint.Collections;
 using Jint.Runtime.Environments;
 
 namespace Jint.Runtime
 {
-    internal sealed class ExecutionContextStack
+    public sealed class ExecutionContextStack
     {
         private readonly RefStack<ExecutionContext> _stack;
 
@@ -14,7 +15,16 @@ namespace Jint.Runtime
         {
             _stack = new RefStack<ExecutionContext>(capacity);
         }
-
+        /// <summary>
+        /// …Ó∏¥÷∆
+        /// </summary>
+        /// <returns></returns>
+        public ExecutionContextStack Clone()
+        {
+            ExecutionContextStack executionContextStack = new ExecutionContextStack(_stack._array.Length);
+            Array.Copy(_stack._array,executionContextStack._stack._array, _stack._array.Length);
+            return executionContextStack;
+        }
         public void ReplaceTopLexicalEnvironment(LexicalEnvironment newEnv)
         {
             var array = _stack._array;

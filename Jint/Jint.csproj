@@ -5,6 +5,7 @@
     <AssemblyOriginatorKeyFile>Jint.snk</AssemblyOriginatorKeyFile>
     <SignAssembly>true</SignAssembly>
     <LangVersion>latest</LangVersion>
+    <Platforms>AnyCPU;x64</Platforms>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Esprima" Version="2.0.0-beta-1331" />

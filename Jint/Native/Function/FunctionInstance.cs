@@ -68,7 +68,7 @@ namespace Jint.Native.Function
 
         public bool Strict => _thisMode == FunctionThisMode.Strict;
 
-        internal override bool IsConstructor => this is IConstructor;
+        public override bool IsConstructor => this is IConstructor;
 
         JintFunctionDefinition IFunctionInstance.FunctionDefinition => _functionDefinition;
 
@@ -349,6 +349,10 @@ namespace Jint.Native.Function
 
         public override string ToString()
         {
+            if (FunctionDeclaration is FunctionExpression fx)
+            {
+                return fx.Location.Source?.Substring(fx.Range.Start, fx.Range.End - fx.Range.Start).Replace("\r\n", "\n").Replace("\n", "\r\n");
+            }
             // TODO no way to extract SourceText from Esprima at the moment, just returning native code
             var nameValue = _nameDescriptor != null ? UnwrapJsValue(_nameDescriptor) : JsString.Empty;
             var name = "";

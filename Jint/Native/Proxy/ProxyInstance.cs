@@ -81,7 +81,7 @@ namespace Jint.Native.Proxy
             return _target.IsArray();
         }
 
-        internal override bool IsConstructor => 
+        public override bool IsConstructor => 
             _handler != null
             && _handler.TryGetValue(TrapConstruct, out var handlerFunction) 
             && handlerFunction is IConstructor;

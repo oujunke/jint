@@ -17,7 +17,7 @@ namespace Jint.Collections
         internal T[] _array;
         internal int _size;
 
-        private const int DefaultCapacity = 2;
+        private const int DefaultCapacity = 1024;
 
         public RefStack(int capacity = DefaultCapacity)
         {

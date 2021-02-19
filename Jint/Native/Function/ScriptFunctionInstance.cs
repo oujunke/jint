@@ -86,7 +86,7 @@ namespace Jint.Native.Function
             }
         }
 
-        internal override bool IsConstructor =>
+        public override bool IsConstructor =>
             (_homeObject.IsUndefined() || _isClassConstructor) 
             && _functionDefinition?.Function is not ArrowFunctionExpression;
 
