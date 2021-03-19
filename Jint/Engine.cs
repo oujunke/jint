@@ -48,7 +48,7 @@ namespace Jint
         {
             AdaptRegexp = true,
             Tolerant = true,
-            Loc = true
+            //Loc = true
         };
 
         private static readonly JsString _errorFunctionName = new JsString("Error");
