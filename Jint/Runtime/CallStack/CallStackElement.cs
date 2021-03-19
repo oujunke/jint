@@ -7,7 +7,7 @@ using Jint.Runtime.Interpreter.Expressions;
 
 namespace Jint.Runtime.CallStack
 {
-    internal readonly struct CallStackElement
+    public readonly struct CallStackElement
     {
         public CallStackElement(
             IFunctionInstance function,

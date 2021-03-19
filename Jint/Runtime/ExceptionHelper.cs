@@ -7,7 +7,7 @@ using Jint.Runtime.References;
 
 namespace Jint.Runtime
 {
-    internal static class ExceptionHelper
+    public static class ExceptionHelper
     {
         public static T ThrowSyntaxError<T>(Engine engine, string message = null)
         {

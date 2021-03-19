@@ -56,7 +56,7 @@ namespace Jint.Native.Function
         }
         
         // for example RavenDB wants to inspect this
-        public IFunction FunctionDeclaration => _functionDefinition.Function;
+        public IFunction FunctionDeclaration => _functionDefinition?.Function;
 
         /// <summary>
         /// Executed when a function object is used as a function

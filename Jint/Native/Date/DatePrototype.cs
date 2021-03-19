@@ -35,7 +35,6 @@ namespace Jint.Native.Date
                 _prototype = engine.Object.PrototypeObject,
                 _dateConstructor = dateConstructor
             };
-
             return obj;
         }
 

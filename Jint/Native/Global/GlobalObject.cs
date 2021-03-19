@@ -799,7 +799,7 @@ namespace Jint.Native.Global
             var range = _engine.GetLastSyntaxNode()?.Range;
             var result = base.Get(property, receiver);
             var log = $"线程:{Thread.CurrentThread.ManagedThreadId}-位置:{range}调用:Global-{property},返回:{result}";
-            //Engine.StreamWriter.WriteLine(log);
+            Engine.AddStreamWriter(log);
             LogUtils.Log(log);
             return result;
         }
@@ -807,7 +807,7 @@ namespace Jint.Native.Global
         {
             var range = _engine.GetLastSyntaxNode()?.Range;
             var log = $"线程:{Thread.CurrentThread.ManagedThreadId}-位置:{range}设置:Global-{property}:{value}";
-            //Engine.StreamWriter.WriteLine(log);
+            Engine.AddStreamWriter(log);
             LogUtils.Log(log);
             return base.Set(property, value, receiver);
 

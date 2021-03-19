@@ -16,8 +16,13 @@ namespace Jint
         }
         public static void Log(string log)
         {
-            Writer.WriteLine(log);
-            Console.WriteLine(log);
+            var printLog = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}--{log}";
+            Writer.WriteLine(printLog);
+            Console.WriteLine(printLog);
+        }
+        public static void Flush()
+        {
+            Writer.Flush();
         }
     }
 }

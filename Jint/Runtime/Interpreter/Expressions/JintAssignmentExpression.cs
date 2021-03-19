@@ -207,7 +207,6 @@ namespace Jint.Runtime.Interpreter.Expressions
                     {
                         ExceptionHelper.ThrowSyntaxError(engine);
                     }
-
                     var rval = right.GetValue().Clone();
 
                     if (right._expression.IsFunctionWithName())

@@ -121,7 +121,7 @@ namespace Jint.Native.Object
         }
 
 
-        internal void SetProperties(PropertyDictionary properties)
+        public void SetProperties(PropertyDictionary properties)
         {
             if (properties != null)
             {
@@ -130,7 +130,7 @@ namespace Jint.Native.Object
             _properties = properties;
         }
 
-        internal void SetSymbols(SymbolDictionary symbols)
+        public void SetSymbols(SymbolDictionary symbols)
         {
             _symbols = symbols;
         }
@@ -877,7 +877,15 @@ namespace Jint.Native.Object
 
         public override string ToString()
         {
-            return TypeConverter.ToString(this);
+            try
+            {
+                return TypeConverter.ToString(this);
+            }
+            catch (Exception)
+            {
+
+                throw;
+            }
         }
 
         public override object ToObject()

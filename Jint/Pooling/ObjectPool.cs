@@ -180,7 +180,7 @@ namespace Jint.Pooling
         /// </remarks>
         internal void Free(T obj)
         {
-            Validate(obj);
+            //Validate(obj);
             ForgetTrackedObject(obj);
  
             if (ReferenceEquals(_firstItem, null))

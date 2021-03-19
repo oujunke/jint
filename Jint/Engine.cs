@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.CompilerServices;
@@ -62,7 +63,8 @@ namespace Jint
         private Dictionary<int, ExecutionContextStack> ExecutionContextStackDictionary = new Dictionary<int, ExecutionContextStack>();
         public ExecutionContextStack ExecutionContextStack
         {
-            get{
+            get
+            {
                 if (ExecutionContextStackDictionary.ContainsKey(Thread.CurrentThread.ManagedThreadId))
                 {
                     return ExecutionContextStackDictionary[Thread.CurrentThread.ManagedThreadId];
@@ -86,14 +88,52 @@ namespace Jint
         private ErrorConstructor _uriError;
         private DebugHandler _debugHandler;
         private List<BreakPoint> _breakPoints;
-        //public static StreamWriter StreamWriter;
+        private static StreamWriter StreamWriter;
+        public static ConcurrentQueue<string> StreamStringQueue = new ConcurrentQueue<string>();
+        public static bool IsFlush;
         static Engine()
         {
-            //StreamWriter = new StreamWriter("CefJsDebug.log");
+            StreamWriter = new StreamWriter("CefJsDebug.log");
+            Task.Factory.StartNew(() =>
+            {
+                string data = string.Empty;
+                while (true)
+                {
+                    try
+                    {
+                        while(StreamStringQueue.TryDequeue(out data))
+                        {
+                            if (IsFlush)
+                            {
+                                StreamWriter.Flush();
+                                IsFlush = false;
+                            }
+                            StreamWriter.WriteLine(data);
+                        }
+                        if (IsFlush)
+                        {
+                            StreamWriter.Flush();
+                            IsFlush = false;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        LogUtils.Log(ex.Message);
+                    }
+                    finally
+                    {
+                        Thread.Sleep(100);
+                    }
+                }
+            }, TaskCreationOptions.LongRunning);
+        }
+        public static void AddStreamWriter(string str)
+        {
+            StreamStringQueue.Enqueue(str);
         }
         public static void Flush()
         {
-            //StreamWriter.Flush();
+            IsFlush = true;
         }
         // cached access
         private readonly List<IConstraint> _constraints;
@@ -388,7 +428,7 @@ namespace Jint
             return Execute(script, true);
         }
 
-        internal Engine Execute(Script script, bool resetState)
+        public Engine Execute(Script script, bool resetState)
         {
             if (resetState)
             {
@@ -1314,7 +1354,7 @@ namespace Jint
             {
                 LogUtils.Log($"出现异常:{ex2}");
             }
-            
+
 
             return result;
         }
