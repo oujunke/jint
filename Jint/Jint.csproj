@@ -8,7 +8,7 @@
     <Platforms>AnyCPU;x64</Platforms>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Esprima" Version="2.0.0-beta-1331" />
+    <PackageReference Include="Esprima" Version="2.0.0-beta-1292" />
     <PackageReference Include="Nullable" Version="1.3.0" PrivateAssets="all" />
   </ItemGroup>
 </Project>
