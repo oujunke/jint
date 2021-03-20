@@ -470,7 +470,12 @@ namespace Jint
         {
             return _completionValue;
         }
-
+        public Action<Node, Completion> JintStatementEvel;
+        public Action<Node, object> JintEvaluateEvel;
+        public DebugInformation GetDebugInformation(Node node)
+        {
+            return DebugHandler.CreateDebugInformation(node);
+        }
         internal void RunBeforeExecuteStatementChecks(Statement statement)
         {
             // Avoid allocating the enumerator because we run this loop very often.
@@ -493,7 +498,7 @@ namespace Jint
             return GetValue(value, false);
         }
 
-        internal JsValue GetValue(object value, bool returnReferenceToPool)
+        public JsValue GetValue(object value, bool returnReferenceToPool)
         {
             if (value is JsValue jsValue)
             {
@@ -508,7 +513,7 @@ namespace Jint
             return GetValue(reference, returnReferenceToPool);
         }
 
-        internal JsValue GetValue(Reference reference, bool returnReferenceToPool)
+        public JsValue GetValue(Reference reference, bool returnReferenceToPool)
         {
             var baseValue = reference.GetBase();
 

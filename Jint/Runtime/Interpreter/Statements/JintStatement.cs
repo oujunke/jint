@@ -44,7 +44,9 @@ namespace Jint.Runtime.Interpreter.Statements
                 _initialized = true;
             }
             Engine.AddStreamWriter(_engine._lastSyntaxNode.Range + this.ToString());
-            return ExecuteInternal();
+            var completion= ExecuteInternal();
+            _engine.JintStatementEvel?.Invoke(_statement, completion);
+            return completion;
         }
 
         protected abstract Completion ExecuteInternal();

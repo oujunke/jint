@@ -150,11 +150,11 @@ namespace Jint.Runtime.Debugger
             return true;
         }
 
-        private DebugInformation CreateDebugInformation(Statement statement)
+        public DebugInformation CreateDebugInformation(Node node)
         {
             var info = new DebugInformation
             {
-                CurrentStatement = statement,
+                CurrentStatement = node,
                 CallStack = _debugCallStack,
                 CurrentMemoryUsage = _engine.CurrentMemoryUsage
             };

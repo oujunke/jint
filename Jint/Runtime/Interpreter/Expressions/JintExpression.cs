@@ -44,7 +44,9 @@ namespace Jint.Runtime.Interpreter.Expressions
                 _initialized = true;
             }
             Engine.AddStreamWriter(_expression.Range + ToString());
-            return EvaluateInternal();
+            var result= EvaluateInternal();
+            _engine.JintEvaluateEvel?.Invoke(_expression,result);
+            return result;
         }
 
         /// <summary>
