@@ -108,7 +108,7 @@ namespace Jint.Runtime.Interpreter.Expressions
             _engine._lastSyntaxNode = _expression;
 
             // we always create a JsValue
-            return (JsValue) EvaluateInternal();
+            return (JsValue)Evaluate();
         }
 
         public static bool StrictlyEqual(JsValue x, JsValue y)
