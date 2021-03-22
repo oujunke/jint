@@ -472,6 +472,7 @@ namespace Jint
         }
         public Action<Node, Completion> JintStatementEvel;
         public Action<Node, object> JintEvaluateEvel;
+        public Action<Node> JintNodeEvelBefore;
         public DebugInformation GetDebugInformation(Node node)
         {
             return DebugHandler.CreateDebugInformation(node);

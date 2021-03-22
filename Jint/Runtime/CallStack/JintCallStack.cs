@@ -93,14 +93,14 @@ namespace Jint.Runtime.CallStack
                 {
                     // it's a function
                     sb.Append(" (");
-                    for (var index = 0; index < arguments.Value.Count; index++)
+                    for (var index = 0; index < arguments.Count; index++)
                     {
                         if (index != 0)
                         {
                             sb.Append(", ");
                         }
 
-                        var arg = arguments.Value[index];
+                        var arg = arguments[index];
                         sb.Append(GetPropertyKey(arg));
                     }
                     sb.Append(")");
