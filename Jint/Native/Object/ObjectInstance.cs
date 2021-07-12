@@ -369,7 +369,7 @@ namespace Jint.Native.Object
 
             return descriptor ?? PropertyDescriptor.Undefined;
         }
-
+        
         protected internal virtual void SetOwnProperty(JsValue property, PropertyDescriptor desc)
         {
             EnsureInitialized();
@@ -638,12 +638,11 @@ namespace Jint.Native.Object
         {
             var current = GetOwnProperty(property);
             var extensible = Extensible;
-
             if (current == desc)
             {
                 return true;
             }
-
+            desc.ChangeNum = current.ChangeNum + 1;
             return ValidateAndApplyPropertyDescriptor(this, property, extensible, desc, current);
         }
 
@@ -682,6 +681,7 @@ namespace Jint.Native.Object
                         }
 
                         propertyDescriptor._flags |= desc._flags & PropertyFlag.MutableBinding;
+                        propertyDescriptor.ChangeNum = desc.ChangeNum;
                         o.SetOwnProperty(property, propertyDescriptor);
                     }
                     else
@@ -800,6 +800,7 @@ namespace Jint.Native.Object
             {
                 if (!ReferenceEquals(descValue, null))
                 {
+                    current.ChangeNum = desc.ChangeNum;
                     current.Value = descValue;
                 }
 

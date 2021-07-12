@@ -13,7 +13,10 @@ namespace Jint.Runtime.Descriptors
 
         internal PropertyFlag _flags;
         internal JsValue _value;
-
+        /// <summary>
+        /// 更改次数
+        /// </summary>
+        public int ChangeNum;
         protected PropertyDescriptor(PropertyFlag flags)
         {
             _flags = flags;
@@ -67,6 +70,7 @@ namespace Jint.Runtime.Descriptors
 
             Writable = descriptor.Writable;
             WritableSet = descriptor.WritableSet;
+            ChangeNum = descriptor.ChangeNum;
         }
 
         public virtual JsValue Get => null;
