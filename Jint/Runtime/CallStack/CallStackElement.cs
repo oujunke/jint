@@ -3,28 +3,43 @@
 using Esprima;
 using Esprima.Ast;
 using Jint.Native.Function;
+using Jint.Runtime.Environments;
 using Jint.Runtime.Interpreter.Expressions;
 
 namespace Jint.Runtime.CallStack
 {
-    public readonly struct CallStackElement
+    internal readonly struct CallStackElement
     {
         public CallStackElement(
-            IFunctionInstance function,
-            JintExpression expression)
+            FunctionInstance function,
+            JintExpression? expression,
+            ExecutionContext callingExecutionContext)
         {
             Function = function;
             Expression = expression;
+            CallingExecutionContext = callingExecutionContext;
         }
 
-        public readonly IFunctionInstance Function;
+        public readonly FunctionInstance Function;
         public readonly JintExpression? Expression;
+        public readonly ExecutionContext CallingExecutionContext;
 
-        public Location Location =>
-            Expression?._expression.Location ?? ((Node?) Function.FunctionDefinition?.Function)?.Location ?? default;
+        public Location Location
+        {
+            get
+            {
+                var expressionLocation = Expression?._expression.Location;
+                if (expressionLocation != null && expressionLocation.Value != default)
+                {
+                    return expressionLocation.Value;
+                }
+
+                return ((Node?) Function._functionDefinition?.Function)?.Location ?? default;
+            }
+        }
 
         public NodeList<Expression>? Arguments =>
-            Function.FunctionDefinition?.Function.Params;
+            Function._functionDefinition?.Function.Params;
 
         public override string ToString()
         {
@@ -37,7 +52,7 @@ namespace Jint.Runtime.CallStack
                     name = JintExpression.ToString(Expression._expression);
                 }
             }
-            
+
             return name ?? "(anonymous)";
         }
     }

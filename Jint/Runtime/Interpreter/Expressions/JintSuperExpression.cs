@@ -3,18 +3,18 @@ using Jint.Runtime.Environments;
 
 namespace Jint.Runtime.Interpreter.Expressions
 {
-    internal class JintSuperExpression : JintExpression
+    internal sealed class JintSuperExpression : JintExpression
     {
-        public JintSuperExpression(Engine engine, Super expression) : base(engine, expression)
+        public JintSuperExpression(Super expression) : base(expression)
         {
         }
 
-        protected override object EvaluateInternal()
+        protected override ExpressionResult EvaluateInternal(EvaluationContext context)
         {
-            var envRec = (FunctionEnvironmentRecord) _engine.GetThisEnvironment();
+            var envRec = (FunctionEnvironmentRecord) context.Engine.ExecutionContext.GetThisEnvironment();
             var activeFunction = envRec._functionObject;
             var superConstructor = activeFunction.GetPrototypeOf();
-            return superConstructor;
+            return NormalCompletion(superConstructor);
         }
     }
 }

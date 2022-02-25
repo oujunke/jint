@@ -25,7 +25,7 @@ namespace Jint.Tests.Runtime
         [Fact]
         public void ArrayPrototypeToStringWithArray()
         {
-            var result = _engine.Execute("Array.prototype.toString.call([1,2,3]);").GetCompletionValue().AsString();
+            var result = _engine.Evaluate("Array.prototype.toString.call([1,2,3]);").AsString();
 
             Assert.Equal("1,2,3", result);
         }
@@ -33,7 +33,7 @@ namespace Jint.Tests.Runtime
         [Fact]
         public void ArrayPrototypeToStringWithNumber()
         {
-            var result = _engine.Execute("Array.prototype.toString.call(1);").GetCompletionValue().AsString();
+            var result = _engine.Evaluate("Array.prototype.toString.call(1);").AsString();
 
             Assert.Equal("[object Number]", result);
         }
@@ -41,7 +41,7 @@ namespace Jint.Tests.Runtime
         [Fact]
         public void ArrayPrototypeToStringWithObject()
         {
-            var result = _engine.Execute("Array.prototype.toString.call({});").GetCompletionValue().AsString();
+            var result = _engine.Evaluate("Array.prototype.toString.call({});").AsString();
 
             Assert.Equal("[object Object]", result);
         }
@@ -49,7 +49,7 @@ namespace Jint.Tests.Runtime
         [Fact]
         public void EmptyStringKey()
         {
-            var result = _engine.Execute("var x=[];x[\"\"]=8;x[\"\"];").GetCompletionValue().AsNumber();
+            var result = _engine.Evaluate("var x=[];x[\"\"]=8;x[\"\"];").AsNumber();
 
             Assert.Equal(8, result);
         }
@@ -113,6 +113,88 @@ namespace Jint.Tests.Runtime
             ";
 
             _engine.Execute(code);
+        }
+
+#if !NETCOREAPP
+        // this test case only triggers on older full framework where the is no checks for infinite comparisons
+        [Fact]
+        public void ArraySortShouldObeyExecutionConstraints()
+        {
+            const string script = @"
+                let cases = [5,5];
+                let latestCase = cases.sort((c1, c2) => c1 > c2 ? -1: 1);";
+
+            var engine = new Engine(options => options
+                .TimeoutInterval(TimeSpan.FromSeconds(1))
+            );
+            Assert.Throws<TimeoutException>(() => engine.Evaluate(script));
+        }
+#endif
+
+        [Fact]
+        public void ExtendingArrayAndInstanceOf()
+        {
+            const string script = @"
+                class MyArr extends Array {
+                    constructor(...args) {
+                        super(...args);
+                    } 
+                }";
+
+            _engine.Execute(script);
+            _engine.Evaluate("const a = new MyArr(1,2);");
+            Assert.True(_engine.Evaluate("a instanceof MyArr").AsBoolean());
+        }
+
+        [Fact]
+        public void IteratorShouldBeConvertibleToArray()
+        {
+            Assert.Equal("hello;again", _engine.Evaluate("Array.from(['hello', 'again'].values()).join(';')"));
+            Assert.Equal("hello;another", _engine.Evaluate("Array.from(new Map([['hello', 'world'], ['another', 'value']]).keys()).join(';')"));
+        }
+
+        [Fact]
+        public void ArrayFromShouldNotFlattenInputArray()
+        {
+            Assert.Equal("a;b", _engine.Evaluate("[...['a', 'b']].join(';')"));
+            Assert.Equal("0,a;1,b", _engine.Evaluate("[...['a', 'b'].entries()].join(';')"));
+            Assert.Equal("0,c;1,d", _engine.Evaluate("Array.from(['c', 'd'].entries()).join(';')"));
+            Assert.Equal("0,e;1,f", _engine.Evaluate("Array.from([[0, 'e'],[1, 'f']]).join(';')"));
+        }
+
+        [Fact]
+        public void ArrayEntriesShouldReturnKeyValuePairs()
+        {
+            Assert.Equal("0,hello,1,world", _engine.Evaluate("Array.from(['hello', 'world'].entries()).join()"));
+            Assert.Equal("0,hello;1,world", _engine.Evaluate("Array.from(['hello', 'world'].entries()).join(';')"));
+            Assert.Equal("0,;1,1;2,5", _engine.Evaluate("Array.from([,1,5,].entries()).join(';')"));
+        }
+
+        [Fact]
+        public void IteratorsShouldHaveIteratorSymbol()
+        {
+            _engine.Execute("assert(!!['hello'].values()[Symbol.iterator])");
+            _engine.Execute("assert(!!new Map([['hello', 'world']]).keys()[Symbol.iterator])");
+        }
+
+
+
+        [Fact]
+        public void ArraySortDoesNotCrashInDebugMode()
+        {
+            var engine = new Engine(o =>
+            {
+                o.DebugMode(true);
+            });
+            engine.SetValue("equal", new Action<object, object>(Assert.Equal));
+
+            const string code = @"
+                var items = [5,2,4,1];
+                items.sort((a,b) => a - b);
+                equal('1,2,4,5', items.join());
+            ";
+
+            engine.Execute(code);
         }
     }
 }

@@ -10,7 +10,7 @@ namespace Jint.Runtime.Interpreter
     /// <summary>
     /// Works as memento for function execution. Optimization to cache things that don't change.
     /// </summary>
-    public sealed class JintFunctionDefinition
+    internal sealed class JintFunctionDefinition
     {
         private readonly Engine _engine;
 
@@ -31,43 +31,30 @@ namespace Jint.Runtime.Interpreter
             Function = function;
             Name = !string.IsNullOrEmpty(function.Id?.Name) ? function.Id.Name : null;
             Strict = function.Strict;
-
-            if (!Strict && !function.Expression)
-            {
-                // Esprima doesn't detect strict at the moment for
-                // language/expressions/object/method-definition/name-invoke-fn-strict.js
-                var blockStatement = (BlockStatement)function.Body;
-                ref readonly var statements = ref blockStatement.Body;
-                for (int i = 0; i < statements.Count; ++i)
-                {
-                    if (statements[i] is Directive d && d.Directiv == "use strict")
-                    {
-                        Strict = true;
-                    }
-                }
-            }
         }
 
-        internal Completion Execute()
+        public FunctionThisMode ThisMode => Strict || _engine._isStrict ? FunctionThisMode.Strict : FunctionThisMode.Global;
+
+        internal Completion Execute(EvaluationContext context)
         {
             if (Function.Expression)
             {
-                _bodyExpression ??= JintExpression.Build(_engine, (Expression)Function.Body);
-                var jsValue = _bodyExpression?.GetValue() ?? Undefined.Instance;
-                return new Completion(CompletionType.Return, jsValue, null, Function.Body.Location);
+                _bodyExpression ??= JintExpression.Build(_engine, (Expression) Function.Body);
+                var jsValue = _bodyExpression?.GetValue(context).Value ?? Undefined.Instance;
+                return new Completion(CompletionType.Return, jsValue, Function.Body.Location);
             }
 
-            var blockStatement = (BlockStatement)Function.Body;
-            _bodyStatementList ??= new JintStatementList(_engine, blockStatement, blockStatement.Body);
-            return _bodyStatementList.Execute();
+            var blockStatement = (BlockStatement) Function.Body;
+            _bodyStatementList ??= new JintStatementList(blockStatement, blockStatement.Body);
+            return _bodyStatementList.Execute(context);
         }
 
-        internal State Initialize(Engine engine, FunctionInstance functionInstance)
+        internal State Initialize(FunctionInstance functionInstance)
         {
             return _state ??= DoInitialize(functionInstance);
         }
 
-        internal class State
+        internal sealed class State
         {
             public bool HasRestParameter;
             public int Length;
@@ -77,7 +64,7 @@ namespace Jint.Runtime.Interpreter
             public bool HasParameterExpressions;
             public bool ArgumentsObjectNeeded;
             public List<Key> VarNames;
-            public LinkedList<FunctionDeclaration> FunctionsToInitialize;
+            public LinkedList<JintFunctionDefinition> FunctionsToInitialize;
             public readonly HashSet<Key> FunctionNames = new HashSet<Key>();
             public LexicalVariableDeclaration[] LexicalDeclarations = Array.Empty<LexicalVariableDeclaration>();
             public HashSet<Key> ParameterBindings;
@@ -107,18 +94,18 @@ namespace Jint.Runtime.Interpreter
             var lexicalNames = hoistingScope._lexicalNames;
             state.VarNames = hoistingScope._varNames;
 
-            LinkedList<FunctionDeclaration> functionsToInitialize = null;
+            LinkedList<JintFunctionDefinition> functionsToInitialize = null;
 
             if (functionDeclarations != null)
             {
-                functionsToInitialize = new LinkedList<FunctionDeclaration>();
+                functionsToInitialize = new LinkedList<JintFunctionDefinition>();
                 for (var i = functionDeclarations.Count - 1; i >= 0; i--)
                 {
                     var d = functionDeclarations[i];
                     var fn = d.Id.Name;
                     if (state.FunctionNames.Add(fn))
                     {
-                        functionsToInitialize.AddFirst(d);
+                        functionsToInitialize.AddFirst(new JintFunctionDefinition(_engine, d));
                     }
                 }
             }
@@ -289,7 +276,7 @@ namespace Jint.Runtime.Interpreter
                         {
                             _hasRestParameter = true;
                             _hasParameterExpressions = true;
-                            parameter = ((RestElement)property).Argument;
+                            parameter = ((RestElement) property).Argument;
                             continue;
                         }
                     }
@@ -311,7 +298,7 @@ namespace Jint.Runtime.Interpreter
             out bool hasArguments)
         {
             hasArguments = false;
-            state.IsSimpleParameterList = true;
+            state.IsSimpleParameterList  = true;
 
             ref readonly var functionDeclarationParams = ref function.Params;
             var count = functionDeclarationParams.Count;

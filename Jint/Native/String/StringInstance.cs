@@ -16,9 +16,9 @@ namespace Jint.Native.String
 
         Types IPrimitiveInstance.Type => Types.String;
 
-        JsValue IPrimitiveInstance.PrimitiveValue => PrimitiveValue;
+        JsValue IPrimitiveInstance.PrimitiveValue => StringData;
 
-        public JsString PrimitiveValue { get; set; }
+        public JsString StringData { get; internal init; }
 
         private static bool IsInt32(double d, out int intValue)
         {
@@ -55,7 +55,7 @@ namespace Jint.Native.String
                 return PropertyDescriptor.Undefined;
             }
 
-            var str = PrimitiveValue.ToString();
+            var str = StringData.ToString();
             var number = TypeConverter.ToNumber(property);
             if (!IsInt32(number, out var index) || index < 0 || index >= str.Length)
             {
@@ -67,29 +67,39 @@ namespace Jint.Native.String
 
         public override IEnumerable<KeyValuePair<JsValue, PropertyDescriptor>> GetOwnProperties()
         {
-            if (_length != null)
-            {
-                yield return new KeyValuePair<JsValue, PropertyDescriptor>(CommonProperties.Length, _length);
-            }
-
             foreach (var entry in base.GetOwnProperties())
             {
                 yield return entry;
             }
+
+            if (_length != null)
+            {
+                yield return new KeyValuePair<JsValue, PropertyDescriptor>(CommonProperties.Length, _length);
+            }
+        }
+
+        internal override IEnumerable<JsValue> GetInitialOwnStringPropertyKeys()
+        {
+            return new[] { JsString.LengthString };
         }
 
         public override List<JsValue> GetOwnPropertyKeys(Types types)
         {
-            var keys = new List<JsValue>(PrimitiveValue.Length + 1);
-            for (uint i = 0; i < PrimitiveValue.Length; ++i)
+            var keys = new List<JsValue>(StringData.Length + 1);
+            if ((types & Types.String) != 0)
             {
-                keys.Add(JsString.Create(i));
+                for (uint i = 0; i < StringData.Length; ++i)
+                {
+                    keys.Add(JsString.Create(i));
+                }
+
+                keys.AddRange(base.GetOwnPropertyKeys(Types.String));
             }
 
-            keys.AddRange(base.GetOwnPropertyKeys(types));
-            keys.Sort((v1, v2) => TypeConverter.ToNumber(v1).CompareTo(TypeConverter.ToNumber(v2)));
-
-            keys.Add(JsString.LengthString);
+            if ((types & Types.Symbol) != 0)
+            {
+                keys.AddRange(base.GetOwnPropertyKeys(Types.Symbol));
+            }
 
             return keys;
         }

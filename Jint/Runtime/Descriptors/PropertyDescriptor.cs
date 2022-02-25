@@ -14,12 +14,16 @@ namespace Jint.Runtime.Descriptors
         internal PropertyFlag _flags;
         internal JsValue _value;
 
-        public PropertyDescriptor(PropertyFlag flags)
+        public PropertyDescriptor() : this(PropertyFlag.None)
+        {
+        }
+
+        protected PropertyDescriptor(PropertyFlag flags)
         {
             _flags = flags;
         }
 
-        public PropertyDescriptor(JsValue value, PropertyFlag flags) : this(flags)
+        protected internal PropertyDescriptor(JsValue value, PropertyFlag flags) : this(flags)
         {
             if ((_flags & PropertyFlag.CustomJsValue) != 0)
             {
@@ -215,15 +219,18 @@ namespace Jint.Runtime.Descriptors
         internal PropertyFlag Flags
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get { return _flags; }
+            get => _flags;
         }
 
-        public static PropertyDescriptor ToPropertyDescriptor(Engine engine, JsValue o)
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-topropertydescriptor
+        /// </summary>
+        public static PropertyDescriptor ToPropertyDescriptor(Realm realm, JsValue o)
         {
-            var obj = o.TryCast<ObjectInstance>();
-            if (ReferenceEquals(obj, null))
+            if (o is not ObjectInstance obj)
             {
-                ExceptionHelper.ThrowTypeError(engine);
+                ExceptionHelper.ThrowTypeError(realm);
+                return null;
             }
 
             var getProperty = obj.GetProperty(CommonProperties.Get);
@@ -234,7 +241,7 @@ namespace Jint.Runtime.Descriptors
             if ((obj.HasProperty(CommonProperties.Value) || obj.HasProperty(CommonProperties.Writable)) &&
                 (hasGetProperty || hasSetProperty))
             {
-                ExceptionHelper.ThrowTypeError(engine);
+                ExceptionHelper.ThrowTypeError(realm);
             }
 
             var desc = hasGetProperty || hasSetProperty
@@ -273,7 +280,7 @@ namespace Jint.Runtime.Descriptors
                 var getter = obj.UnwrapJsValue(getProperty);
                 if (!getter.IsUndefined() && getter.TryCast<ICallable>() == null)
                 {
-                    ExceptionHelper.ThrowTypeError(engine);
+                    ExceptionHelper.ThrowTypeError(realm);
                 }
 
                 ((GetSetPropertyDescriptor) desc).SetGet(getter);
@@ -284,7 +291,7 @@ namespace Jint.Runtime.Descriptors
                 var setter = obj.UnwrapJsValue(setProperty);
                 if (!setter.IsUndefined() && setter.TryCast<ICallable>() == null)
                 {
-                    ExceptionHelper.ThrowTypeError(engine);
+                    ExceptionHelper.ThrowTypeError(realm);
                 }
 
                 ((GetSetPropertyDescriptor) desc).SetSet(setter);
@@ -294,27 +301,37 @@ namespace Jint.Runtime.Descriptors
             {
                 if (!ReferenceEquals(desc.Value, null) || desc.WritableSet)
                 {
-                    ExceptionHelper.ThrowTypeError(engine);
+                    ExceptionHelper.ThrowTypeError(realm);
                 }
             }
 
             return desc;
         }
 
-        public static JsValue FromPropertyDescriptor(Engine engine, PropertyDescriptor desc)
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-frompropertydescriptor
+        /// </summary>
+        public static JsValue FromPropertyDescriptor(Engine engine, PropertyDescriptor desc, bool strictUndefined = false)
         {
             if (ReferenceEquals(desc, Undefined))
             {
                 return Native.Undefined.Instance;
             }
 
-            var obj = engine.Object.Construct(Arguments.Empty);
+            var obj = engine.Realm.Intrinsics.Object.Construct(Arguments.Empty);
             var properties = new PropertyDictionary(4, checkExistingKeys: false);
+
+            // TODO should not check for strictUndefined, but needs a bigger cleanup
+            // we should have possibility to leave out the properties in property descriptors as newer tests
+            // also assert properties to be undefined
 
             if (desc.IsDataDescriptor())
             {
                 properties["value"] =  new PropertyDescriptor(desc.Value ?? Native.Undefined.Instance, PropertyFlag.ConfigurableEnumerableWritable);
-                properties["writable"] = new PropertyDescriptor(desc.Writable, PropertyFlag.ConfigurableEnumerableWritable);
+                if (desc._flags != PropertyFlag.None || desc.WritableSet)
+                {
+                    properties["writable"] = new PropertyDescriptor(desc.Writable, PropertyFlag.ConfigurableEnumerableWritable);
+                }
             }
             else
             {
@@ -322,8 +339,15 @@ namespace Jint.Runtime.Descriptors
                 properties["set"] = new PropertyDescriptor(desc.Set ?? Native.Undefined.Instance, PropertyFlag.ConfigurableEnumerableWritable);
             }
 
-            properties["enumerable"] = new PropertyDescriptor(desc.Enumerable, PropertyFlag.ConfigurableEnumerableWritable);
-            properties["configurable"] = new PropertyDescriptor(desc.Configurable, PropertyFlag.ConfigurableEnumerableWritable);
+            if (!strictUndefined || desc.EnumerableSet)
+            {
+                properties["enumerable"] = new PropertyDescriptor(desc.Enumerable, PropertyFlag.ConfigurableEnumerableWritable);
+            }
+
+            if (!strictUndefined || desc.ConfigurableSet)
+            {
+                properties["configurable"] = new PropertyDescriptor(desc.Configurable, PropertyFlag.ConfigurableEnumerableWritable);
+            }
 
             obj.SetProperties(properties);
             return obj;

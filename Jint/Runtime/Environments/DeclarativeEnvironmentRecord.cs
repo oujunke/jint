@@ -6,23 +6,25 @@ namespace Jint.Runtime.Environments
 {
     /// <summary>
     /// Represents a declarative environment record
-    /// http://www.ecma-international.org/ecma-262/5.1/#sec-10.2.1.1
+    /// https://tc39.es/ecma262/#sec-declarative-environment-records
     /// </summary>
     internal class DeclarativeEnvironmentRecord : EnvironmentRecord
     {
-        internal readonly HybridDictionary<Binding> _dictionary = new HybridDictionary<Binding>();
+        internal readonly HybridDictionary<Binding> _dictionary = new();
         internal bool _hasBindings;
+        internal readonly bool _catchEnvironment;
 
-        public DeclarativeEnvironmentRecord(Engine engine) : base(engine)
+        public DeclarativeEnvironmentRecord(Engine engine, bool catchEnvironment = false) : base(engine)
         {
+            _catchEnvironment = catchEnvironment;
         }
 
-        public sealed override bool HasBinding(string name)
+        public override bool HasBinding(string name)
         {
             return _dictionary.ContainsKey(name);
         }
 
-        internal sealed override bool TryGetBinding(
+        internal override bool TryGetBinding(
             in BindingName name,
             bool strict,
             out Binding binding,
@@ -30,7 +32,7 @@ namespace Jint.Runtime.Environments
         {
             binding = default;
             var success = _dictionary.TryGetValue(name.Key, out binding);
-            value = success && binding.IsInitialized() ? UnwrapBindingValue(strict, binding) : default;
+            value = success && binding.IsInitialized() ? binding.Value : default;
             return success;
         }
 
@@ -51,7 +53,7 @@ namespace Jint.Runtime.Environments
             _hasBindings = true;
             _dictionary[name] = new Binding(null, canBeDeleted, mutable: true, strict: false);
         }
-        
+
         public sealed override void CreateImmutableBinding(string name, bool strict = true)
         {
             _hasBindings = true;
@@ -77,7 +79,7 @@ namespace Jint.Runtime.Environments
             {
                 if (strict)
                 {
-                    ExceptionHelper.ThrowReferenceError(_engine, key);
+                    ExceptionHelper.ThrowReferenceError(_engine.Realm, key);
                 }
                 CreateMutableBindingAndInitialize(key, canBeDeleted: true, value);
                 return;
@@ -91,9 +93,9 @@ namespace Jint.Runtime.Environments
             // Is it an uninitialized binding?
             if (!binding.IsInitialized())
             {
-                ExceptionHelper.ThrowReferenceError<object>(_engine, message: "Cannot access '" +  key + "' before initialization");
+                ExceptionHelper.ThrowReferenceError(_engine.Realm, "Cannot access '" +  key + "' before initialization");
             }
-            
+
             if (binding.Mutable)
             {
                 _hasBindings = true;
@@ -103,36 +105,27 @@ namespace Jint.Runtime.Environments
             {
                 if (strict)
                 {
-                    ExceptionHelper.ThrowTypeError(_engine, "Assignment to constant variable.");
+                    ExceptionHelper.ThrowTypeError(_engine.Realm, "Assignment to constant variable.");
                 }
             }
         }
 
-        public sealed override JsValue GetBindingValue(string name, bool strict)
+        public override JsValue GetBindingValue(string name, bool strict)
         {
             _dictionary.TryGetValue(name, out var binding);
-            return UnwrapBindingValue(strict, binding);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private JsValue UnwrapBindingValue(bool strict, in Binding binding)
-        {
-            if (!binding.Mutable && !binding.IsInitialized())
+            if (binding.IsInitialized())
             {
-                if (strict)
-                {
-                    ThrowUninitializedBindingException();
-                }
-
-                return Undefined;
+                return binding.Value;
             }
 
-            return binding.Value;
+            ThrowUninitializedBindingError(name);
+            return null;
         }
 
-        private void ThrowUninitializedBindingException()
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private void ThrowUninitializedBindingError(string name)
         {
-            throw new JavaScriptException(_engine.ReferenceError, "Can't access an uninitialized immutable binding.");
+            throw new JavaScriptException(_engine.Realm.Intrinsics.ReferenceError, $"Cannot access '{name}' before initialization");
         }
 
         public sealed override bool DeleteBinding(string name)
@@ -152,17 +145,12 @@ namespace Jint.Runtime.Environments
 
             return true;
         }
-        
+
         public override bool HasThisBinding() => false;
 
         public override bool HasSuperBinding() => false;
 
         public override JsValue WithBaseObject() => Undefined;
-
-        public sealed override JsValue ImplicitThisValue()
-        {
-            return Undefined;
-        }
 
         /// <inheritdoc />
         internal sealed override string[] GetAllBindingNames()

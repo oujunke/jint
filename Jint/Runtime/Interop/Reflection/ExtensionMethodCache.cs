@@ -10,7 +10,7 @@ namespace Jint.Runtime.Interop.Reflection
     /// <summary>
     /// A extension method lookup that can be shared between engines, build based on extension methods provided via options.
     /// </summary>
-    internal class ExtensionMethodCache
+    internal sealed class ExtensionMethodCache
     {
         internal static readonly ExtensionMethodCache Empty = new(new Dictionary<Type, MethodInfo[]>());
 
@@ -24,12 +24,23 @@ namespace Jint.Runtime.Interop.Reflection
         {
             _allExtensionMethods = extensionMethods;
         }
-		
+
         internal static ExtensionMethodCache Build(List<Type> extensionMethodContainerTypes)
         {
+            if (extensionMethodContainerTypes.Count == 0)
+            {
+                return Empty;
+            }
+
+            Type GetTypeDefinition(Type type)
+            {
+                return type.IsConstructedGenericType && type.GenericTypeArguments.Any(x => x.IsGenericParameter) ?
+                    type.GetGenericTypeDefinition() : type;
+            }
+
             var methodsByTarget = extensionMethodContainerTypes
                 .SelectMany(x => x.GetExtensionMethods())
-                .GroupBy(x => x.GetParameters()[0].ParameterType)
+                .GroupBy(x => GetTypeDefinition(x.GetParameters()[0].ParameterType))
                 .ToDictionary(x => x.Key, x => x.ToArray());
 
             return new ExtensionMethodCache(methodsByTarget);
@@ -37,13 +48,34 @@ namespace Jint.Runtime.Interop.Reflection
 
         public bool HasMethods => _allExtensionMethods.Count > 0;
 
+        private MethodInfo BindMethodGenericParameters(MethodInfo method)
+        {
+            if (method.IsGenericMethodDefinition && method.ContainsGenericParameters)
+            {
+                var methodGenerics = method.GetGenericArguments();
+                var parameterList = Enumerable.Repeat(typeof(object), methodGenerics.Length).ToArray();
+
+                try
+                {
+                    return method.MakeGenericMethod(parameterList);
+                }
+                catch
+                {
+                    // Generic parameter constraints failed probably.
+                    // If it does not work, let it be. We don't need to do anything.
+                }
+            }
+            return method;
+        }
+
+
         public bool TryGetExtensionMethods(Type objectType, out MethodInfo[] methods)
         {
             var methodLookup = _extensionMethods;
 
             if (methodLookup.TryGetValue(objectType, out methods))
             {
-                return true;
+                return methods.Length > 0;
             }
 
             var results = new List<MethodInfo>();
@@ -60,7 +92,7 @@ namespace Jint.Runtime.Interop.Reflection
                 }
             }
 
-            methods = results.ToArray();
+            methods = results.Select(BindMethodGenericParameters).ToArray();
 
             // racy, we don't care, worst case we'll catch up later
             Interlocked.CompareExchange(ref _extensionMethods, new Dictionary<Type, MethodInfo[]>(methodLookup)
@@ -83,6 +115,11 @@ namespace Jint.Runtime.Interop.Reflection
             foreach (var i in type.GetInterfaces())
             {
                 yield return i;
+
+                if (i.IsConstructedGenericType)
+                {
+                    yield return i.GetGenericTypeDefinition();
+                }
             }
 
             // return all inherited types
@@ -90,6 +127,12 @@ namespace Jint.Runtime.Interop.Reflection
             while (currentBaseType != null)
             {
                 yield return currentBaseType;
+
+                if (currentBaseType.IsConstructedGenericType)
+                {
+                    yield return currentBaseType.GetGenericTypeDefinition();
+                }
+
                 currentBaseType = currentBaseType.BaseType;
             }
         }

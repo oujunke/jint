@@ -1,6 +1,7 @@
 using System;
 using System.Globalization;
 using System.Reflection;
+using Jint.Extensions;
 using Jint.Native;
 using Jint.Runtime.Descriptors;
 using Jint.Runtime.Descriptors.Specialized;
@@ -39,7 +40,7 @@ namespace Jint.Runtime.Interop.Reflection
             {
                 return constantValue;
             }
-            
+
             // first check indexer so we don't confuse inherited properties etc
             var value = TryReadFromIndexer(target);
 
@@ -51,15 +52,6 @@ namespace Jint.Runtime.Interop.Reflection
                 }
                 catch (TargetInvocationException tie)
                 {
-                    switch (tie.InnerException)
-                    {
-                        case ArgumentOutOfRangeException _:
-                        case IndexOutOfRangeException _:
-                        case InvalidOperationException _:
-                        case NotSupportedException _:
-                            return JsValue.Undefined;
-                    }
-
                     ExceptionHelper.ThrowMeaningfulException(engine, tie);
                 }
             }
@@ -90,18 +82,18 @@ namespace Jint.Runtime.Interop.Reflection
 
         public void SetValue(Engine engine, object target, JsValue value)
         {
-            object converted;
+            object converted = null;
             if (_memberType == typeof(JsValue))
             {
                 converted = value;
             }
-            else
+            else if (!ReflectionExtensions.TryConvertViaTypeCoercion(_memberType, engine.Options.Interop.ValueCoercion, value, out converted))
             {
                 // attempt to convert the JsValue to the target type
                 converted = value.ToObject();
                 if (converted != null && converted.GetType() != _memberType)
                 {
-                    converted = engine.ClrTypeConverter.Convert(converted, _memberType, CultureInfo.InvariantCulture);
+                    converted = ConvertValueToSet(engine, converted);
                 }
             }
 
@@ -115,9 +107,14 @@ namespace Jint.Runtime.Interop.Reflection
             }
         }
 
+        protected virtual object ConvertValueToSet(Engine engine, object value)
+        {
+            return engine.ClrTypeConverter.Convert(value, _memberType, CultureInfo.InvariantCulture);
+        }
+
         public virtual PropertyDescriptor CreatePropertyDescriptor(Engine engine, object target)
         {
-            return new ReflectionDescriptor(engine, this, target);
+            return new ReflectionDescriptor(engine, this, target, true);
         }
     }
 }

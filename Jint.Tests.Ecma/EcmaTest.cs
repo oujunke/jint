@@ -2,6 +2,8 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
+using Esprima;
+using Esprima.Ast;
 using Jint.Runtime;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -153,19 +155,31 @@ namespace Jint.Tests.Ecma
     public abstract class EcmaTest
     {
         private static string _lastError;
-        private static string staSource;
+        private static Script staSource;
         private static readonly string BasePath;
         private static readonly List<SourceFile> _sourceFiles = new List<SourceFile>(10_000);
+        private static readonly TimeZoneInfo _pacificTimeZone;
 
         static EcmaTest()
         {
-            var assemblyPath = new Uri(typeof(EcmaTest).GetTypeInfo().Assembly.CodeBase).LocalPath;
+            try
+            {
+                _pacificTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Pacific Standard Time");
+            }
+            catch (TimeZoneNotFoundException)
+            {
+                // https://stackoverflow.com/questions/47848111/how-should-i-fetch-timezoneinfo-in-a-platform-agnostic-way
+                // should be natively supported soon https://github.com/dotnet/runtime/issues/18644
+                _pacificTimeZone = TimeZoneInfo.FindSystemTimeZoneById("America/Los_Angeles");
+            }
+
+            var assemblyPath = new Uri(typeof(EcmaTest).GetTypeInfo().Assembly.Location).LocalPath;
             var assemblyDirectory = new FileInfo(assemblyPath).Directory;
             BasePath = assemblyDirectory.Parent.Parent.Parent.FullName;
 
             var localPath = assemblyDirectory.Parent.Parent.Parent.FullName;
 
-            var fixturesPath = Path.Combine(localPath, @"TestCases\alltests.json");
+            var fixturesPath = Path.Combine(localPath, "TestCases/alltests.json");
 
             var content = File.ReadAllText(fixturesPath);
             var doc = JArray.Parse(content);
@@ -196,16 +210,16 @@ namespace Jint.Tests.Ecma
             _lastError = null;
 
             //NOTE: The Date tests in test262 assume the local timezone is Pacific Standard Time
-            var pacificTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Pacific Standard Time");
             var engine = new Engine(cfg => cfg
-                .LocalTimeZone(pacificTimeZone)
+                .LocalTimeZone(_pacificTimeZone)
             );
 
             // loading driver
             if (staSource == null)
             {
-                var driverFilename = Path.Combine(BasePath, "TestCases\\sta.js");
-                staSource = File.ReadAllText(driverFilename);
+                var driverFilename = Path.Combine(BasePath, "TestCases/sta.js");
+                var source = File.ReadAllText(driverFilename);
+                staSource = new JavaScriptParser(source, new ParserOptions("sta.js")).ParseScript();
             }
 
             engine.Execute(staSource);

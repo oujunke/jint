@@ -2,6 +2,7 @@
 using System.Globalization;
 using System.Linq.Expressions;
 using System.Reflection;
+using Jint.Extensions;
 using Jint.Native;
 using Jint.Native.Function;
 
@@ -11,12 +12,19 @@ namespace Jint.Runtime.Interop
     {
         private static readonly JsString _name = new JsString("Function");
         private readonly MethodDescriptor[] _methods;
+        private readonly ClrFunctionInstance _fallbackClrFunctionInstance;
 
         public MethodInfoFunctionInstance(Engine engine, MethodDescriptor[] methods)
-            : base(engine, _name)
+            : base(engine, engine.Realm, _name)
         {
             _methods = methods;
-            _prototype = engine.Function.PrototypeObject;
+            _prototype = engine.Realm.Intrinsics.Function.PrototypeObject;
+        }
+
+        public MethodInfoFunctionInstance(Engine engine, MethodDescriptor[] methods, ClrFunctionInstance fallbackClrFunctionInstance)
+            : this(engine, methods)
+        {
+            _fallbackClrFunctionInstance = fallbackClrFunctionInstance;
         }
 
         public override JsValue Call(JsValue thisObject, JsValue[] jsArguments)
@@ -28,7 +36,9 @@ namespace Jint.Runtime.Interop
                     var jsArgumentsTemp = new JsValue[1 + jsArguments.Length];
                     jsArgumentsTemp[0] = thisObject;
                     Array.Copy(jsArguments, 0, jsArgumentsTemp, 1, jsArguments.Length);
-                    jsArguments = jsArgumentsTemp;
+                    return method.HasParams
+                        ? ProcessParamsArrays(jsArgumentsTemp, method)
+                        : jsArgumentsTemp;
                 }
                 return method.HasParams
                     ? ProcessParamsArrays(jsArguments, method)
@@ -38,10 +48,8 @@ namespace Jint.Runtime.Interop
             var converter = Engine.ClrTypeConverter;
 
             object[] parameters = null;
-            foreach (var tuple in TypeConverter.FindBestMatch(_engine, _methods, ArgumentProvider))
+            foreach (var (method, arguments, _) in TypeConverter.FindBestMatch(_engine, _methods, ArgumentProvider))
             {
-                var method = tuple.Item1;
-                var arguments = tuple.Item2;
                 var methodParameters = method.Parameters;
 
                 if (parameters == null || parameters.Length != methodParameters.Length)
@@ -80,7 +88,8 @@ namespace Jint.Runtime.Interop
                     }
                     else
                     {
-                        if (!converter.TryConvert(argument.ToObject(), parameterType, CultureInfo.InvariantCulture, out parameters[i]))
+                        if (!ReflectionExtensions.TryConvertViaTypeCoercion(parameterType, _engine.Options.Interop.ValueCoercion, argument, out parameters[i])
+                            && !converter.TryConvert(argument.ToObject(), parameterType, CultureInfo.InvariantCulture, out parameters[i]))
                         {
                             argumentsMatch = false;
                             break;
@@ -109,7 +118,13 @@ namespace Jint.Runtime.Interop
                 }
             }
 
-            return ExceptionHelper.ThrowTypeError<JsValue>(_engine, "No public methods with the specified arguments were found.");
+            if (_fallbackClrFunctionInstance is not null)
+            {
+                return _fallbackClrFunctionInstance.Call(thisObject, jsArguments);
+            }
+
+            ExceptionHelper.ThrowTypeError(_engine.Realm, "No public methods with the specified arguments were found.");
+            return null;
         }
 
         /// <summary>
@@ -132,8 +147,8 @@ namespace Jint.Runtime.Interop
                 return jsArguments;
             }
 
-            var jsArray = Engine.Array.Construct(Arguments.Empty);
-            Engine.Array.PrototypeObject.Push(jsArray, argsToTransform);
+            var jsArray = Engine.Realm.Intrinsics.Array.Construct(Arguments.Empty);
+            Engine.Realm.Intrinsics.Array.PrototypeObject.Push(jsArray, argsToTransform);
 
             var newArgumentsCollection = new JsValue[nonParamsArgumentsCount + 1];
             for (var j = 0; j < nonParamsArgumentsCount; ++j)

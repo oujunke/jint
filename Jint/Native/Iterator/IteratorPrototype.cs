@@ -1,4 +1,6 @@
-﻿using Jint.Collections;
+﻿using System.Collections.Generic;
+using Jint.Collections;
+using Jint.Native.Object;
 using Jint.Native.Symbol;
 using Jint.Runtime;
 using Jint.Runtime.Descriptors;
@@ -6,23 +8,21 @@ using Jint.Runtime.Interop;
 
 namespace Jint.Native.Iterator
 {
-    internal sealed class IteratorPrototype : IteratorInstance
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-%iteratorprototype%-object
+    /// </summary>
+    internal class IteratorPrototype : Prototype
     {
-        private string _name;
+        private readonly string _name;
 
-        private IteratorPrototype(Engine engine) : base(engine)
+        internal IteratorPrototype(
+            Engine engine,
+            Realm realm,
+            string name,
+            Prototype objectPrototype) : base(engine, realm)
         {
-        }
-
-        public static IteratorPrototype CreatePrototypeObject(Engine engine, string name, IteratorConstructor iteratorConstructor)
-        {
-            var obj = new IteratorPrototype(engine)
-            {
-                _prototype = engine.Object.PrototypeObject,
-                _name = name
-            };
-
-            return obj;
+            _prototype = objectPrototype;
+            _name = name;
         }
 
         protected override void Initialize()
@@ -34,21 +34,49 @@ namespace Jint.Native.Iterator
             };
             SetProperties(properties);
 
+            var symbols = new SymbolDictionary(_name != null ? 2 : 1)
+            {
+                [GlobalSymbolRegistry.Iterator] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "[Symbol.iterator]", ToIterator, 0, PropertyFlag.Configurable), true, false, true),
+            };
+
             if (_name != null)
             {
-                var symbols = new SymbolDictionary(1)
-                {
-                    [GlobalSymbolRegistry.ToStringTag] = new PropertyDescriptor(_name, PropertyFlag.Configurable)
-                };
-                SetSymbols(symbols);
+                symbols[GlobalSymbolRegistry.ToStringTag] = new PropertyDescriptor(_name, PropertyFlag.Configurable);
             }
+            SetSymbols(symbols);
+        }
+
+        internal IteratorInstance Construct(IEnumerable<JsValue> enumerable)
+        {
+            var instance = new IteratorInstance(Engine, enumerable)
+            {
+                _prototype = this
+            };
+
+            return instance;
+        }
+
+        internal IteratorInstance Construct(List<JsValue> enumerable)
+        {
+            var instance = new IteratorInstance.ListIterator(Engine, enumerable)
+            {
+                _prototype = this
+            };
+
+            return instance;
+        }
+
+        private static JsValue ToIterator(JsValue thisObj, JsValue[] arguments)
+        {
+            return thisObj;
         }
 
         private JsValue Next(JsValue thisObj, JsValue[] arguments)
         {
-            if (!(thisObj is IteratorInstance iterator))
+            var iterator = thisObj as IteratorInstance;
+            if (iterator is null)
             {
-                return ExceptionHelper.ThrowTypeError<JsValue>(_engine);
+                ExceptionHelper.ThrowTypeError(_engine.Realm);
             }
 
             iterator.TryIteratorStep(out var result);

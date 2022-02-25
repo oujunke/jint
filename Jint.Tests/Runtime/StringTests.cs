@@ -25,10 +25,19 @@ var bar = foo;
 bar += 'bar';
 ";
             var value = _engine.Execute(script);
-            var foo = _engine.Execute("foo").GetCompletionValue().AsString();
-            var bar = _engine.Execute("bar").GetCompletionValue().AsString();
+            var foo = _engine.Evaluate("foo").AsString();
+            var bar = _engine.Evaluate("bar").AsString();
             Assert.Equal("foofoo", foo);
             Assert.Equal("foofoobar", bar);
+        }
+
+        [Fact]
+        public void TrimLeftRightShouldBeSameAsTrimStartEnd()
+        {
+            _engine.Execute(@"
+                assert(''.trimLeft === ''.trimStart);
+                assert(''.trimRight === ''.trimEnd);
+");
         }
     }
 }

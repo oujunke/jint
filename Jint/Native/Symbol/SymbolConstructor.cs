@@ -15,28 +15,20 @@ namespace Jint.Native.Symbol
     {
         private static readonly JsString _functionName = new JsString("Symbol");
 
-        public SymbolConstructor(Engine engine)
-            : base(engine, _functionName, FunctionThisMode.Global)
+        internal SymbolConstructor(
+            Engine engine,
+            Realm realm,
+            FunctionPrototype functionPrototype,
+            ObjectPrototype objectPrototype)
+            : base(engine, realm, _functionName, FunctionThisMode.Global)
         {
+            _prototype = functionPrototype;
+            PrototypeObject = new SymbolPrototype(engine, realm, this, objectPrototype);
+            _length = new PropertyDescriptor(JsNumber.PositiveZero, PropertyFlag.Configurable);
+            _prototypeDescriptor = new PropertyDescriptor(PrototypeObject, PropertyFlag.AllForbidden);
         }
 
-        public static SymbolConstructor CreateSymbolConstructor(Engine engine)
-        {
-            var obj = new SymbolConstructor(engine)
-            {
-                _prototype = engine.Function.PrototypeObject
-            };
-
-            // The value of the [[Prototype]] internal property of the Symbol constructor is the Function prototype object
-            obj.PrototypeObject = SymbolPrototype.CreatePrototypeObject(engine, obj);
-
-            obj._length = new PropertyDescriptor(JsNumber.PositiveZero, PropertyFlag.Configurable);
-
-            // The initial value of String.prototype is the String prototype object
-            obj._prototypeDescriptor = new PropertyDescriptor(obj.PrototypeObject, PropertyFlag.AllForbidden);
-
-            return obj;
-        }
+        public SymbolPrototype PrototypeObject { get; }
 
         protected override void Initialize()
         {
@@ -78,7 +70,10 @@ namespace Jint.Native.Symbol
             return value;
         }
 
-        public JsValue For(JsValue thisObj, JsValue[] arguments)
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-symbol.for
+        /// </summary>
+        private JsValue For(JsValue thisObj, JsValue[] arguments)
         {
             var stringKey = TypeConverter.ToJsString(arguments.At(0));
 
@@ -93,14 +88,18 @@ namespace Jint.Native.Symbol
             return symbol;
         }
 
-        public JsValue KeyFor(JsValue thisObj, JsValue[] arguments)
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-symbol.keyfor
+        /// </summary>
+        private JsValue KeyFor(JsValue thisObj, JsValue[] arguments)
         {
-            if (!(arguments.At(0) is JsSymbol sym))
+            var symbol = arguments.At(0) as JsSymbol;
+            if (symbol is null)
             {
-                return ExceptionHelper.ThrowTypeError<JsValue>(Engine);
+                ExceptionHelper.ThrowTypeError(_realm);
             }
 
-            if (_engine.GlobalSymbolRegistry.TryGetSymbol(sym._value, out var e))
+            if (_engine.GlobalSymbolRegistry.TryGetSymbol(symbol._value, out var e))
             {
                 return e._value;
             }
@@ -108,22 +107,15 @@ namespace Jint.Native.Symbol
             return Undefined;
         }
 
-        public ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+        ObjectInstance IConstructor.Construct(JsValue[] arguments, JsValue newTarget)
         {
-            return ExceptionHelper.ThrowTypeError<ObjectInstance>(Engine);
+            ExceptionHelper.ThrowTypeError(_realm);
+            return null;
         }
 
         public SymbolInstance Construct(JsSymbol symbol)
         {
-            var instance = new SymbolInstance(Engine)
-            {
-                _prototype = PrototypeObject,
-                SymbolData = symbol
-            };
-
-            return instance;
+            return new SymbolInstance(Engine, PrototypeObject, symbol);
         }
-
-        public SymbolPrototype PrototypeObject { get; private set; }
     }
 }

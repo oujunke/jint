@@ -9,34 +9,35 @@ namespace Jint.Runtime.Interpreter.Expressions
         private readonly JintFunctionDefinition _function;
 
         public JintFunctionExpression(Engine engine, IFunction function)
-            : base(engine, ArrowParameterPlaceHolder.Empty)
+            : base(ArrowParameterPlaceHolder.Empty)
         {
             _function = new JintFunctionDefinition(engine, function);
         }
 
-        protected override object EvaluateInternal()
+        protected override ExpressionResult EvaluateInternal(EvaluationContext context)
         {
-            var funcEnv = LexicalEnvironment.NewDeclarativeEnvironment(_engine, _engine.ExecutionContext.LexicalEnvironment);
+            return GetValue(context);
+        }
 
-            var functionThisMode = _function.Strict || _engine._isStrict
-                ? FunctionThisMode.Strict 
-                : FunctionThisMode.Global;
+        public override Completion GetValue(EvaluationContext context)
+        {
+            var engine = context.Engine;
+            var funcEnv = JintEnvironment.NewDeclarativeEnvironment(engine, engine.ExecutionContext.LexicalEnvironment);
 
             var closure = new ScriptFunctionInstance(
-                _engine,
+                engine,
                 _function,
                 funcEnv,
-                functionThisMode);
+                _function.ThisMode);
 
             closure.MakeConstructor();
 
             if (_function.Name != null)
             {
-                var envRec = (DeclarativeEnvironmentRecord) funcEnv._record;
-                envRec.CreateMutableBindingAndInitialize(_function.Name, canBeDeleted: false, closure);
+                funcEnv.CreateMutableBindingAndInitialize(_function.Name, canBeDeleted: false, closure);
             }
 
-            return closure;
+            return Completion.Normal(closure, _expression.Location);
         }
     }
 }

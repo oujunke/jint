@@ -8,7 +8,7 @@ namespace Jint.Runtime.Environments
 {
     /// <summary>
     /// Represents an object environment record
-    /// http://www.ecma-international.org/ecma-262/5.1/#sec-10.2.1.2
+    /// https://tc39.es/ecma262/#sec-object-environment-records
     /// </summary>
     internal sealed class ObjectEnvironmentRecord : EnvironmentRecord
     {
@@ -18,8 +18,8 @@ namespace Jint.Runtime.Environments
 
         public ObjectEnvironmentRecord(
             Engine engine,
-            ObjectInstance bindingObject, 
-            bool provideThis, 
+            ObjectInstance bindingObject,
+            bool provideThis,
             bool withEnvironment) : base(engine)
         {
             _bindingObject = bindingObject;
@@ -41,7 +41,7 @@ namespace Jint.Runtime.Environments
             {
                 return true;
             }
-            
+
             return !IsBlocked(name);
         }
 
@@ -101,8 +101,8 @@ namespace Jint.Runtime.Environments
                 : new PropertyDescriptor(Undefined, PropertyFlag.NonConfigurable | PropertyFlag.MutableBinding);
 
             _bindingObject.DefinePropertyOrThrow(name, propertyDescriptor);
-        }  
-        
+        }
+
         /// <summary>
         /// http://www.ecma-international.org/ecma-262/6.0/#sec-object-environment-records-createmutablebinding-n-d
         /// </summary>
@@ -114,7 +114,7 @@ namespace Jint.Runtime.Environments
 
             _bindingObject.DefinePropertyOrThrow(name, propertyDescriptor);
         }
-        
+
         /// <summary>
         ///  http://www.ecma-international.org/ecma-262/6.0/#sec-object-environment-records-createimmutablebinding-n-s
         /// </summary>
@@ -138,10 +138,12 @@ namespace Jint.Runtime.Environments
 
         internal override void SetMutableBinding(in BindingName name, JsValue value, bool strict)
         {
-            if (!_bindingObject.Set(name.StringValue, value) && strict)
+            if (strict && !_bindingObject.HasProperty(name.StringValue))
             {
-                ExceptionHelper.ThrowTypeError(_engine);
+                ExceptionHelper.ThrowReferenceError(_engine.Realm, name.Key);
             }
+                
+            _bindingObject.Set(name.StringValue, value);
         }
 
         public override JsValue GetBindingValue(string name, bool strict)
@@ -149,10 +151,10 @@ namespace Jint.Runtime.Environments
             var desc = _bindingObject.GetProperty(name);
             if (strict && desc == PropertyDescriptor.Undefined)
             {
-                ExceptionHelper.ThrowReferenceError(_engine, name.ToString());
+                ExceptionHelper.ThrowReferenceError(_engine.Realm, name);
             }
 
-            return ObjectInstance.UnwrapJsValue(desc, this);
+            return ObjectInstance.UnwrapJsValue(desc, _bindingObject);
         }
 
         public override bool DeleteBinding(string name)
@@ -166,16 +168,6 @@ namespace Jint.Runtime.Environments
 
         public override JsValue WithBaseObject() => _withEnvironment ? _bindingObject : Undefined;
 
-        
-        public override JsValue ImplicitThisValue()
-        {
-            if (_provideThis)
-            {
-                return _bindingObject;
-            }
-
-            return Undefined;
-        }
 
         internal override string[] GetAllBindingNames()
         {

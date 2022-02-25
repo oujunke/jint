@@ -1,4 +1,6 @@
-﻿using System;
+﻿#nullable enable
+
+using System;
 using Jint.Runtime;
 
 namespace Jint.Native
@@ -9,7 +11,7 @@ namespace Jint.Native
         {
         }
 
-        public override object ToObject()
+        public override object? ToObject()
         {
             return null;
         }
@@ -19,29 +21,19 @@ namespace Jint.Native
             return "null";
         }
 
-        public override bool Equals(JsValue obj)
+        public override bool IsLooselyEqual(JsValue value)
         {
-            if (ReferenceEquals(this, obj))
-            {
-                return true;
-            }
-
-            if (!(obj is JsNull s))
-            {
-                return false;
-            }
-
-            return Equals(s);
+            return ReferenceEquals(Null, value) || ReferenceEquals(Undefined, value);
         }
 
-        public bool Equals(JsNull other)
+        public override bool Equals(JsValue obj)
         {
-            if (ReferenceEquals(null, other))
-            {
-                return false;
-            }
+            return Equals(obj as JsNull);
+        }
 
-            return true;
+        public bool Equals(JsNull? other)
+        {
+            return other is not null;
         }
     }
 }

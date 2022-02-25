@@ -13,16 +13,17 @@ namespace Jint.Runtime.Descriptors.Specialized
         public ReflectionDescriptor(
             Engine engine,
             ReflectionAccessor reflectionAccessor,
-            object target)
-            : base(PropertyFlag.Enumerable | PropertyFlag.CustomJsValue)
+            object target,
+            bool enumerable)
+            : base((enumerable ? PropertyFlag.Enumerable : PropertyFlag.None) | PropertyFlag.CustomJsValue)
         {
             _engine = engine;
             _reflectionAccessor = reflectionAccessor;
             _target = target;
-            Writable = reflectionAccessor.Writable && engine.Options._IsClrWriteAllowed;
+            Writable = reflectionAccessor.Writable && engine.Options.Interop.AllowWrite;
         }
 
-       
+
         protected internal override JsValue CustomValue
         {
             get

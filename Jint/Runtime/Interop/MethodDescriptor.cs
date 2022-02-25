@@ -1,13 +1,15 @@
+using Jint.Native;
 using System;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using Jint.Extensions;
 
 namespace Jint.Runtime.Interop
 {
-    internal class MethodDescriptor
+    internal sealed class MethodDescriptor
     {
-        private MethodDescriptor(MethodBase method)
+        internal MethodDescriptor(MethodBase method)
         {
             Method = method;
             Parameters = method.GetParameters();
@@ -99,6 +101,57 @@ namespace Jint.Runtime.Interop
             Array.Sort(descriptors, CreateComparison);
 
             return descriptors;
+        }
+
+        public JsValue Call(Engine _engine, object instance, JsValue[] arguments)
+        {
+            var parameters = new object[arguments.Length];
+            var methodParameters = Parameters;
+            var valueCoercionType = _engine.Options.Interop.ValueCoercion;
+
+            try
+            {
+                for (var i = 0; i < arguments.Length; i++)
+                {
+                    var parameterType = methodParameters[i].ParameterType;
+                    var value = arguments[i];
+                    object converted;
+
+                    if (typeof(JsValue).IsAssignableFrom(parameterType))
+                    {
+                        converted = value;
+                    }
+                    else if (!ReflectionExtensions.TryConvertViaTypeCoercion(parameterType, valueCoercionType, value, out converted))
+                    {
+                        converted = _engine.ClrTypeConverter.Convert(
+                            value.ToObject(),
+                            parameterType,
+                            System.Globalization.CultureInfo.InvariantCulture);
+                    }
+
+                    parameters[i] = converted;
+                }
+
+                if (Method is MethodInfo m)
+                {
+                    var retVal = m.Invoke(instance, parameters);
+                    return JsValue.FromObject(_engine, retVal);
+                }
+                else if (Method is ConstructorInfo c)
+                {
+                    var retVal = c.Invoke(parameters);
+                    return JsValue.FromObject(_engine, retVal);
+                }
+                else
+                {
+                    throw new Exception("Method is unknown type");
+                }
+            }
+            catch (TargetInvocationException exception)
+            {
+                ExceptionHelper.ThrowMeaningfulException(_engine, exception);
+                return null;
+            }
         }
     }
 }

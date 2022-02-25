@@ -1,5 +1,9 @@
-﻿using System;
+﻿#nullable enable
+
+using System;
+using System.Numerics;
 using System.Runtime.CompilerServices;
+using Jint.Native.Number;
 using Jint.Runtime;
 
 namespace Jint.Native
@@ -25,10 +29,12 @@ namespace Jint.Native
         internal static readonly JsNumber DoubleNegativeOne = new JsNumber((double) -1);
         internal static readonly JsNumber DoublePositiveInfinity = new JsNumber(double.PositiveInfinity);
         internal static readonly JsNumber DoubleNegativeInfinity = new JsNumber(double.NegativeInfinity);
-        private static readonly JsNumber IntegerNegativeOne = new JsNumber(-1);
+        internal static readonly JsNumber IntegerNegativeOne = new JsNumber(-1);
         internal static readonly JsNumber NegativeZero = new JsNumber(-0d);
         internal static readonly JsNumber PositiveZero = new JsNumber(+0);
-        internal static readonly JsNumber One = new JsNumber(1);
+        internal static readonly JsNumber PositiveOne = new JsNumber(1);
+        internal static readonly JsNumber PositiveTwo = new JsNumber(2);
+        internal static readonly JsNumber PositiveThree = new JsNumber(3);
 
         internal static readonly JsNumber PI = new JsNumber(System.Math.PI);
 
@@ -52,17 +58,17 @@ namespace Jint.Native
             _value = value;
         }
 
-        public JsNumber(uint value) : base(value < int.MaxValue ? InternalTypes.Integer : InternalTypes.Number)
+        public JsNumber(uint value) : base(value <= int.MaxValue ? InternalTypes.Integer : InternalTypes.Number)
         {
             _value = value;
         }
 
-        public JsNumber(ulong value) : base(value < int.MaxValue ? InternalTypes.Integer : InternalTypes.Number)
+        public JsNumber(ulong value) : base(value <= int.MaxValue ? InternalTypes.Integer : InternalTypes.Number)
         {
             _value = value;
         }
 
-        public JsNumber(long value) : base(value < int.MaxValue && value > int.MinValue ? InternalTypes.Integer : InternalTypes.Number)
+        public JsNumber(long value) : base(value <= int.MaxValue && value >= int.MinValue ? InternalTypes.Integer : InternalTypes.Number)
         {
             _value = value;
         }
@@ -72,13 +78,29 @@ namespace Jint.Native
             return _value;
         }
 
+        internal static JsNumber Create(object value)
+        {
+            var underlyingType = System.Type.GetTypeCode(Enum.GetUnderlyingType(value.GetType()));
+            switch (underlyingType)
+            {
+                case TypeCode.Int64:
+                    return Create(Convert.ToInt64(value));
+
+                case TypeCode.UInt32:
+                case TypeCode.UInt64:
+                    return Create(Convert.ToUInt64(value));
+
+                default:
+                    return Create(Convert.ToInt32(value));
+            }
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal static JsNumber Create(double value)
         {
             // we expect zero to be on the fast path of integer mostly
             var temp = _intToJsValue;
-            if (value >= 1 && value < temp.Length
-                && System.Math.Abs(value % 1) <= DoubleIsIntegerTolerance)
+            if (value >= 1 && value < temp.Length && TypeConverter.IsIntegralNumber(value))
             {
                 return temp[(uint) value];
             }
@@ -114,6 +136,21 @@ namespace Jint.Native
                 return DoubleNaN;
             }
 
+            return new JsNumber(value);
+        }
+
+        internal static JsNumber Create(byte value)
+        {
+            return _intToJsValue[value];
+        }
+
+        internal static JsNumber Create(sbyte value)
+        {
+            var temp = _intToJsValue;
+            if ((uint) value < (uint) temp.Length)
+            {
+                return temp[value];
+            }
             return new JsNumber(value);
         }
 
@@ -164,29 +201,87 @@ namespace Jint.Native
             return new JsNumber(value);
         }
 
+        public static JsNumber Create(JsValue jsValue)
+        {
+            if (jsValue is JsNumber number)
+            {
+                return number;
+            }
+
+            return Create(TypeConverter.ToNumber(jsValue));
+        }
+
         public override string ToString()
         {
             return TypeConverter.ToString(_value);
         }
 
-        public override bool Equals(JsValue obj)
+        internal bool IsNaN()
         {
-            if (ReferenceEquals(null, obj))
-            {
-                return false;
-            }
-
-            if (!(obj is JsNumber number))
-            {
-                return false;
-            }
-
-            return Equals(number);
+            return double.IsNaN(_value);
         }
 
-        public bool Equals(JsNumber other)
+        /// <summary>
+        /// Either positive or negative zero.
+        /// </summary>
+        internal bool IsZero()
         {
-            if (ReferenceEquals(null, other))
+            return IsNegativeZero() || IsPositiveZero();
+        }
+
+        internal bool IsNegativeZero()
+        {
+            return NumberInstance.IsNegativeZero(_value);
+        }
+
+        internal bool IsPositiveZero()
+        {
+            return NumberInstance.IsPositiveZero(_value);
+        }
+
+        internal bool IsPositiveInfinity()
+        {
+            return double.IsPositiveInfinity(_value);
+        }
+
+        internal bool IsNegativeInfinity()
+        {
+            return double.IsNegativeInfinity(_value);
+        }
+
+        public override bool IsLooselyEqual(JsValue value)
+        {
+            if (value is JsNumber jsNumber)
+            {
+                return Equals(jsNumber);
+            }
+
+            if (value.IsBigInt())
+            {
+                return TypeConverter.IsIntegralNumber(_value) && new BigInteger(_value) == value.AsBigInt();
+            }
+
+            return base.IsLooselyEqual(value);
+        }
+
+        public override bool Equals(JsValue obj)
+        {
+            return Equals(obj as JsNumber);
+        }
+
+        public override bool Equals(object? obj)
+        {
+            return Equals(obj as JsNumber);
+        }
+
+        public bool Equals(JsNumber? other)
+        {
+            if (other is null)
+            {
+                return false;
+            }
+
+            if (double.IsNaN(_value) || double.IsNaN(other._value))
             {
                 return false;
             }

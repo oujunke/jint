@@ -1,9 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 using Esprima;
 using Esprima.Ast;
+using Jint.Extensions;
 using Jint.Native;
 using Jint.Native.Number;
 using Jint.Native.Number.Dtoa;
@@ -25,7 +27,8 @@ namespace Jint.Runtime
         String = 8,
         Number = 16,
         Symbol = 64,
-        Object = 128
+        BigInt = 128,
+        Object = 256
     }
 
     [Flags]
@@ -43,15 +46,17 @@ namespace Jint.Runtime
         Number = 16,
         Integer = 32,
         Symbol = 64,
+        BigInt = 128,
 
         // primitive  types range end
-        Object = 128,
+        Object = 256,
 
         // internal usage
         ObjectEnvironmentRecord = 512,
         RequiresCloning = 1024,
+        Module = 2048,
 
-        Primitive = Boolean | String | Number | Integer | Symbol,
+        Primitive = Boolean | String | Number | Integer | BigInt | Symbol,
         InternalFlags = ObjectEnvironmentRecord | RequiresCloning
     }
 
@@ -80,23 +85,26 @@ namespace Jint.Runtime
         /// <summary>
         /// https://tc39.es/ecma262/#sec-toprimitive
         /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static JsValue ToPrimitive(JsValue input, Types preferredType = Types.None)
         {
-            if (!(input is ObjectInstance oi))
-            {
-                return input;
-            }
+            return input is not ObjectInstance oi
+                ? input
+                : ToPrimitiveObjectInstance(oi, preferredType);
+        }
 
-            var hint = preferredType switch
-            {
-                Types.String => JsString.StringString,
-                Types.Number => JsString.NumberString,
-                _ => JsString.DefaultString
-            };
-
+        private static JsValue ToPrimitiveObjectInstance(ObjectInstance oi, Types preferredType)
+        {
             var exoticToPrim = oi.GetMethod(GlobalSymbolRegistry.ToPrimitive);
-            if (exoticToPrim is object)
+            if (exoticToPrim is not null)
             {
+                var hint = preferredType switch
+                {
+                    Types.String => JsString.StringString,
+                    Types.Number => JsString.NumberString,
+                    _ => JsString.DefaultString
+                };
+
                 var str = exoticToPrim.Call(oi, new JsValue[] { hint });
                 if (str.IsPrimitive())
                 {
@@ -105,11 +113,11 @@ namespace Jint.Runtime
 
                 if (str.IsObject())
                 {
-                    return ExceptionHelper.ThrowTypeError<JsValue>(oi.Engine, "Cannot convert object to primitive value");
+                    ExceptionHelper.ThrowTypeError(oi.Engine.Realm, "Cannot convert object to primitive value");
                 }
             }
 
-            return OrdinaryToPrimitive(oi, preferredType == Types.None ? Types.Number :  preferredType);
+            return OrdinaryToPrimitive(oi, preferredType == Types.None ? Types.Number : preferredType);
         }
 
         /// <summary>
@@ -119,7 +127,7 @@ namespace Jint.Runtime
         {
             JsString property1;
             JsString property2;
-            
+
             if (hint == Types.String)
             {
                 property1 = (JsString) "toString";
@@ -132,7 +140,8 @@ namespace Jint.Runtime
             }
             else
             {
-                return ExceptionHelper.ThrowTypeError<JsValue>(input.Engine);
+                ExceptionHelper.ThrowTypeError(input.Engine.Realm);
+                return null;
             }
 
             if (input.Get(property1) is ICallable method1)
@@ -153,11 +162,12 @@ namespace Jint.Runtime
                 }
             }
 
-            return ExceptionHelper.ThrowTypeError<JsValue>(input.Engine);
+            ExceptionHelper.ThrowTypeError(input.Engine.Realm);
+            return null;
         }
 
         /// <summary>
-        /// http://www.ecma-international.org/ecma-262/5.1/#sec-9.2
+        /// https://tc39.es/ecma262/#sec-toboolean
         /// </summary>
         public static bool ToBoolean(JsValue o)
         {
@@ -176,13 +186,34 @@ namespace Jint.Runtime
                     return n != 0 && !double.IsNaN(n);
                 case InternalTypes.String:
                     return !((JsString) o).IsNullOrEmpty();
+                case InternalTypes.BigInt:
+                    return ((JsBigInt) o)._value != 0;
                 default:
                     return true;
             }
         }
 
         /// <summary>
-        /// http://www.ecma-international.org/ecma-262/5.1/#sec-9.3
+        /// https://tc39.es/ecma262/#sec-tonumeric
+        /// </summary>
+        public static JsValue ToNumeric(JsValue value)
+        {
+            if (value.IsNumber() || value.IsBigInt())
+            {
+                return value;
+            }
+
+            var primValue = ToPrimitive(value, Types.Number);
+            if (primValue.IsBigInt())
+            {
+                return primValue;
+            }
+
+            return ToNumber(primValue);
+        }
+
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-tonumber
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static double ToNumber(JsValue o)
@@ -195,18 +226,25 @@ namespace Jint.Runtime
         private static double ToNumberUnlikely(JsValue o)
         {
             var type = o._type & ~InternalTypes.InternalFlags;
-            return type switch
+
+            switch (type)
             {
-                InternalTypes.Undefined => double.NaN,
-                InternalTypes.Null => 0,
-                InternalTypes.Object when o is IPrimitiveInstance p => ToNumber(ToPrimitive(p.PrimitiveValue, Types.Number)),
-                InternalTypes.Boolean => (((JsBoolean) o)._value ? 1 : 0),
-                InternalTypes.String => ToNumber(o.ToString()),
-                InternalTypes.Symbol =>
-                // TODO proper TypeError would require Engine instance and a lot of API changes
-                ExceptionHelper.ThrowTypeErrorNoEngine<double>("Cannot convert a Symbol value to a number"),
-                _ => ToNumber(ToPrimitive(o, Types.Number))
-            };
+                case InternalTypes.Undefined:
+                    return double.NaN;
+                case InternalTypes.Null:
+                    return 0;
+                case InternalTypes.Boolean:
+                    return ((JsBoolean) o)._value ? 1 : 0;
+                case InternalTypes.String:
+                    return ToNumber(o.ToString());
+                case InternalTypes.Symbol:
+                case InternalTypes.BigInt:
+                    // TODO proper TypeError would require Engine instance and a lot of API changes
+                    ExceptionHelper.ThrowTypeErrorNoEngine("Cannot convert a " + type + " value to a number");
+                    return 0;
+                default:
+                    return ToNumber(ToPrimitive(o, Types.Number));
+            }
         }
 
         private static double ToNumber(string input)
@@ -217,7 +255,7 @@ namespace Jint.Runtime
                 return 0;
             }
 
-            char first = input[0];
+            var first = input[0];
             if (input.Length == 1 && first >= '0' && first <= '9')
             {
                 // simple constant number
@@ -249,7 +287,7 @@ namespace Jint.Runtime
             {
                 if (s.Length > 2 && s[0] == '0' && char.IsLetter(s[1]))
                 {
-                    int fromBase = 0;
+                    var fromBase = 0;
                     if (s[1] == 'x' || s[1] == 'X')
                     {
                         fromBase = 16;
@@ -277,7 +315,7 @@ namespace Jint.Runtime
                     return double.NaN;
                 }
 
-                double n = double.Parse(s,
+                var n = double.Parse(s,
                     NumberStyles.AllowDecimalPoint | NumberStyles.AllowLeadingSign |
                     NumberStyles.AllowLeadingWhite | NumberStyles.AllowTrailingWhite |
                     NumberStyles.AllowExponent, CultureInfo.InvariantCulture);
@@ -313,6 +351,31 @@ namespace Jint.Runtime
         }
 
         /// <summary>
+        /// https://tc39.es/ecma262/#sec-tointegerorinfinity
+        /// </summary>
+        public static double ToIntegerOrInfinity(JsValue argument)
+        {
+            var number = ToNumber(argument);
+            if (double.IsNaN(number) || number == 0)
+            {
+                return 0;
+            }
+
+            if (double.IsInfinity(number))
+            {
+                return number;
+            }
+
+            var integer = (long) Math.Floor(Math.Abs(number));
+            if (number < 0)
+            {
+                integer *= -1;
+            }
+
+            return integer;
+        }
+
+        /// <summary>
         /// https://tc39.es/ecma262/#sec-tointeger
         /// </summary>
         public static double ToInteger(JsValue o)
@@ -329,7 +392,18 @@ namespace Jint.Runtime
                 return number;
             }
 
-            return (long) number;
+            if (number is >= long.MinValue and <= long.MaxValue)
+            {
+                return (long) number;
+            }
+
+            var integer = Math.Floor(Math.Abs(number));
+            if (number < 0)
+            {
+                integer *= -1;
+            }
+
+            return integer;
         }
 
         internal static double ToInteger(string o)
@@ -349,34 +423,409 @@ namespace Jint.Runtime
             return (long) number;
         }
 
+        internal static int DoubleToInt32Slow(double o)
+        {
+            // Computes the integral value of the number mod 2^32.
+
+            var doubleBits = BitConverter.DoubleToInt64Bits(o);
+            var sign = (int) (doubleBits >> 63); // 0 if positive, -1 if negative
+            var exponent = (int) ((doubleBits >> 52) & 0x7FF) - 1023;
+
+            if ((uint) exponent >= 84)
+            {
+                // Anything with an exponent that is negative or >= 84 will convert to zero.
+                // This includes infinities and NaNs, which have exponent = 1024
+                // The 84 comes from 52 (bits in double mantissa) + 32 (bits in integer)
+                return 0;
+            }
+
+            var mantissa = (doubleBits & 0xFFFFFFFFFFFFFL) | 0x10000000000000L;
+            var int32Value = exponent >= 52 ? (int) (mantissa << (exponent - 52)) : (int) (mantissa >> (52 - exponent));
+
+            return (int32Value + sign) ^ sign;
+        }
+
         /// <summary>
         /// http://www.ecma-international.org/ecma-262/5.1/#sec-9.5
         /// </summary>
         public static int ToInt32(JsValue o)
         {
-            return o._type == InternalTypes.Integer
-                ? o.AsInteger()
-                : (int) (uint) ToNumber(o);
+            if (o._type == InternalTypes.Integer)
+            {
+                return o.AsInteger();
+            }
+
+            var doubleVal = ToNumber(o);
+            if (doubleVal >= -(double) int.MinValue && doubleVal <= int.MaxValue)
+            {
+                // Double-to-int cast is correct in this range
+                return (int) doubleVal;
+            }
+
+            return DoubleToInt32Slow(doubleVal);
         }
 
         /// <summary>
-        /// http://www.ecma-international.org/ecma-262/5.1/#sec-9.6
+        /// https://tc39.es/ecma262/#sec-touint32
         /// </summary>
         public static uint ToUint32(JsValue o)
         {
-            return o._type == InternalTypes.Integer
-                ? (uint) o.AsInteger()
-                : (uint) ToNumber(o);
+            if (o._type == InternalTypes.Integer)
+            {
+                return (uint) o.AsInteger();
+            }
+
+            var doubleVal = ToNumber(o);
+            if (doubleVal is >= 0.0 and <= uint.MaxValue)
+            {
+                // Double-to-uint cast is correct in this range
+                return (uint) doubleVal;
+            }
+
+            return (uint) DoubleToInt32Slow(doubleVal);
         }
 
         /// <summary>
-        /// http://www.ecma-international.org/ecma-262/5.1/#sec-9.7
+        /// https://tc39.es/ecma262/#sec-touint16
         /// </summary>
         public static ushort ToUint16(JsValue o)
         {
-            return  o._type == InternalTypes.Integer
-                ? (ushort) (uint) o.AsInteger()
-                : (ushort) (uint) ToNumber(o);
+            if (o._type == InternalTypes.Integer)
+            {
+                var integer = o.AsInteger();
+                if (integer is >= 0 and <= ushort.MaxValue)
+                {
+                    return (ushort) integer;
+                }
+            }
+
+            var number = ToNumber(o);
+            if (double.IsNaN(number) || number == 0 || double.IsInfinity(number))
+            {
+                return 0;
+            }
+
+            var intValue = Math.Floor(Math.Abs(number));
+            if (number < 0)
+            {
+                intValue *= -1;
+            }
+            var int16Bit = intValue % 65_536; // 2^16
+            return (ushort) int16Bit;
+        }
+
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-toint16
+        /// </summary>
+        internal static double ToInt16(JsValue o)
+        {
+            return o._type == InternalTypes.Integer
+                ? (short) o.AsInteger()
+                : (short) (long) ToNumber(o);
+        }
+
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-toint8
+        /// </summary>
+        internal static double ToInt8(JsValue o)
+        {
+            return o._type == InternalTypes.Integer
+                ? (sbyte) o.AsInteger()
+                : (sbyte) (long) ToNumber(o);
+        }
+
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-touint8
+        /// </summary>
+        internal static double ToUint8(JsValue o)
+        {
+            return o._type == InternalTypes.Integer
+                ? (byte) o.AsInteger()
+                : (byte) (long) ToNumber(o);
+        }
+
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-touint8clamp
+        /// </summary>
+        internal static byte ToUint8Clamp(JsValue o)
+        {
+            if (o._type == InternalTypes.Integer)
+            {
+                var intValue = o.AsInteger();
+                if (intValue is > -1 and < 256)
+                {
+                    return (byte) intValue;
+                }
+            }
+
+            return ToUint8ClampUnlikely(o);
+        }
+
+        private static byte ToUint8ClampUnlikely(JsValue o)
+        {
+            var number = ToNumber(o);
+            if (double.IsNaN(number))
+            {
+                return 0;
+            }
+
+            if (number <= 0)
+            {
+                return 0;
+            }
+
+            if (number >= 255)
+            {
+                return 255;
+            }
+
+            var f = Math.Floor(number);
+            if (f + 0.5 < number)
+            {
+                return (byte) (f + 1);
+            }
+
+            if (number < f + 0.5)
+            {
+                return (byte) f;
+            }
+
+            if (f % 2 != 0)
+            {
+                return (byte) (f + 1);
+            }
+
+            return (byte) f;
+        }
+
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-tobigint
+        /// </summary>
+        public static BigInteger ToBigInt(JsValue value)
+        {
+            return value is JsBigInt bigInt
+                ? bigInt._value
+                : ToBigIntUnlikely(value);
+        }
+
+        private static BigInteger ToBigIntUnlikely(JsValue value)
+        {
+            var prim = ToPrimitive(value, Types.Number);
+            switch (prim.Type)
+            {
+                case Types.BigInt:
+                    return ((JsBigInt) prim)._value;
+                case Types.Boolean:
+                    return ((JsBoolean) prim)._value ? BigInteger.One : BigInteger.Zero;
+                case Types.String:
+                    return StringToBigInt(prim.ToString());
+                default:
+                    ExceptionHelper.ThrowTypeErrorNoEngine("Cannot convert a " + prim.Type + " to a BigInt");
+                    return BigInteger.One;
+            }
+        }
+
+        internal static BigInteger StringToBigInt(string str)
+        {
+            if (!TryStringToBigInt(str, out var result))
+            {
+                throw new ParserException(" Cannot convert " + str + " to a BigInt");
+            }
+
+            return result;
+        }
+
+        internal static bool TryStringToBigInt(string str, out BigInteger result)
+        {
+            if (string.IsNullOrWhiteSpace(str))
+            {
+                result = BigInteger.Zero;
+                return true;
+            }
+
+            str = str.Trim();
+
+            for (var i = 0; i < str.Length; i++)
+            {
+                var c = str[i];
+                if (!char.IsDigit(c))
+                {
+                    if (i == 0 && (c == '-' || Character.IsDecimalDigit(c)))
+                    {
+                        // ok
+                        continue;
+                    }
+
+                    if (i != 1 && Character.IsHexDigit(c))
+                    {
+                        // ok
+                        continue;
+                    }
+
+                    if (i == 1 && (Character.IsDecimalDigit(c) || c is 'x' or 'X' or 'b' or 'B' or 'o' or 'O'))
+                    {
+                        // allowed, can be probably parsed
+                        continue;
+                    }
+
+                    result = default;
+                    return false;
+                }
+            }
+
+            // check if we can get by using plain parsing
+            if (BigInteger.TryParse(str, NumberStyles.Integer, CultureInfo.InvariantCulture, out result))
+            {
+                return true;
+            }
+
+            if (str.Length > 2)
+            {
+                if (str.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                {
+                    // we get better precision if we don't hit floating point parsing that is performed by Esprima
+#if NETSTANDARD2_1_OR_GREATER
+                    var source = str.AsSpan(2);
+#else
+                    var source = str.Substring(2);
+#endif
+
+                    var c = source[0];
+                    if (c > 7 && Character.IsHexDigit(c))
+                    {
+                        // ensure we get positive number
+                        source = "0" + source.ToString();
+                    }
+
+                    if (BigInteger.TryParse(source, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out result))
+                    {
+                        return true;
+                    }
+                }
+                else if (str.StartsWith("0o", StringComparison.OrdinalIgnoreCase) && Character.IsOctalDigit(str[2]))
+                {
+                    // try parse large octal
+                    var bigInteger = new BigInteger();
+                    for (var i = 2; i < str.Length; i++)
+                    {
+                        var c = str[i];
+                        if (!Character.IsHexDigit(c))
+                        {
+                            return false;
+                        }
+                        bigInteger = bigInteger * 8 + c - '0';
+                    }
+
+                    result = bigInteger;
+                    return true;
+                }
+                else if (str.StartsWith("0b", StringComparison.OrdinalIgnoreCase) && Character.IsDecimalDigit(str[2]))
+                {
+                    // try parse large binary
+                    var bigInteger = new BigInteger();
+                    for (var i = 2; i < str.Length; i++)
+                    {
+                        var c = str[i];
+
+                        if (c != '0' && c != '1')
+                        {
+                            // not good
+                            return false;
+                        }
+
+                        bigInteger <<= 1;
+                        bigInteger += c == '1' ? 1 : 0;
+                    }
+
+                    result = bigInteger;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-tobigint64
+        /// </summary>
+        internal static long ToBigInt64(BigInteger value)
+        {
+            var int64bit = BigIntegerModulo(value, BigInteger.Pow(2, 64));
+            if (int64bit >= BigInteger.Pow(2, 63))
+            {
+                return (long) (int64bit - BigInteger.Pow(2, 64));
+            }
+            return (long) int64bit;
+        }
+
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-tobiguint64
+        /// </summary>
+        internal static ulong ToBigUint64(BigInteger value)
+        {
+            return (ulong) BigIntegerModulo(value, BigInteger.Pow(2, 64));
+        }
+
+        /// <summary>
+        /// Implements the JS spec modulo operation as expected.
+        /// </summary>
+        internal static BigInteger BigIntegerModulo(BigInteger a, BigInteger n)
+        {
+            return (a %= n) < 0 && n > 0 || a > 0 && n < 0 ? a + n : a;
+        }
+
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-canonicalnumericindexstring
+        /// </summary>
+        internal static double? CanonicalNumericIndexString(JsValue value)
+        {
+            if (value is JsNumber jsNumber)
+            {
+                return jsNumber._value;
+            }
+
+            if (value is JsString jsString)
+            {
+                if (jsString.ToString() == "-0")
+                {
+                    return JsNumber.NegativeZero._value;
+                }
+
+                var n = ToNumber(value);
+                if (!JsValue.SameValue(ToString(n), value))
+                {
+                    return null;
+                }
+
+                return n;
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-toindex
+        /// </summary>
+        public static uint ToIndex(Realm realm, JsValue value)
+        {
+            if (value.IsUndefined())
+            {
+                return 0;
+            }
+
+            var integerIndex = ToIntegerOrInfinity(value);
+            if (integerIndex < 0)
+            {
+                ExceptionHelper.ThrowRangeError(realm);
+            }
+
+            var index = ToLength(integerIndex);
+            if (integerIndex != index)
+            {
+                ExceptionHelper.ThrowRangeError(realm, "Invalid index");
+            }
+
+            return (uint) Math.Min(uint.MaxValue, index);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -422,7 +871,7 @@ namespace Jint.Runtime
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal static string ToString(double d)
         {
-            if (d > long.MinValue && d < long.MaxValue  && Math.Abs(d % 1) <= DoubleIsIntegerTolerance)
+            if (d > long.MinValue && d < long.MaxValue && Math.Abs(d % 1) <= DoubleIsIntegerTolerance)
             {
                 // we are dealing with integer that can be cached
                 return ToString((long) d);
@@ -431,6 +880,12 @@ namespace Jint.Runtime
             using var stringBuilder = StringBuilderPool.Rent();
             // we can create smaller array as we know the format to be short
             return NumberPrototype.NumberToString(d, new DtoaBuilder(17), stringBuilder.Builder);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static string ToString(BigInteger bigInteger)
+        {
+            return bigInteger.ToString();
         }
 
         /// <summary>
@@ -471,51 +926,83 @@ namespace Jint.Runtime
             {
                 return s;
             }
+
             return JsString.Create(ToStringNonString(o));
         }
 
         private static string ToStringNonString(JsValue o)
         {
             var type = o._type & ~InternalTypes.InternalFlags;
-            return type switch
+            switch (type)
             {
-                InternalTypes.Boolean => ((JsBoolean) o)._value ? "true" : "false",
-                InternalTypes.Integer => ToString((int) ((JsNumber) o)._value),
-                InternalTypes.Number => ToString(((JsNumber) o)._value),
-                InternalTypes.Symbol => ExceptionHelper.ThrowTypeErrorNoEngine<string>("Cannot convert a Symbol value to a string"),
-                InternalTypes.Undefined => Undefined.Text,
-                InternalTypes.Null => Null.Text,
-                InternalTypes.Object when o is IPrimitiveInstance p => ToString(ToPrimitive(p.PrimitiveValue, Types.String)),
-                InternalTypes.Object when o is IObjectWrapper p => p.Target?.ToString(),
-                _ => ToString(ToPrimitive(o, Types.String))
-            };
+                case InternalTypes.Boolean:
+                    return ((JsBoolean) o)._value ? "true" : "false";
+                case InternalTypes.Integer:
+                    return ToString((int) ((JsNumber) o)._value);
+                case InternalTypes.Number:
+                    return ToString(((JsNumber) o)._value);
+                case InternalTypes.BigInt:
+                    return ToString(((JsBigInt) o)._value);
+                case InternalTypes.Symbol:
+                    ExceptionHelper.ThrowTypeErrorNoEngine("Cannot convert a Symbol value to a string");
+                    return null;
+                case InternalTypes.Undefined:
+                    return Undefined.Text;
+                case InternalTypes.Null:
+                    return Null.Text;
+                case InternalTypes.Object when o is IObjectWrapper p:
+                    return p.Target?.ToString();
+                default:
+                    return ToString(ToPrimitive(o, Types.String));
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static ObjectInstance ToObject(Engine engine, JsValue value)
+        public static ObjectInstance ToObject(Realm realm, JsValue value)
         {
             if (value is ObjectInstance oi)
             {
                 return oi;
             }
 
-            return ToObjectNonObject(engine, value);
+            return ToObjectNonObject(realm, value);
         }
 
-        private static ObjectInstance ToObjectNonObject(Engine engine, JsValue value)
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-isintegralnumber
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static bool IsIntegralNumber(double value)
+        {
+            return !double.IsNaN(value)
+                   && !double.IsInfinity(value)
+                   && Math.Floor(Math.Abs(value)) == Math.Abs(value);
+        }
+
+        private static ObjectInstance ToObjectNonObject(Realm realm, JsValue value)
         {
             var type = value._type & ~InternalTypes.InternalFlags;
-            return type switch
+            switch (type)
             {
-                InternalTypes.Boolean => engine.Boolean.Construct((JsBoolean) value),
-                InternalTypes.Number => engine.Number.Construct((JsNumber) value),
-                InternalTypes.Integer => engine.Number.Construct((JsNumber) value),
-                InternalTypes.String => engine.String.Construct(value.ToString()),
-                InternalTypes.Symbol => engine.Symbol.Construct((JsSymbol) value),
-                InternalTypes.Null => ExceptionHelper.ThrowTypeError<ObjectInstance>(engine, "Cannot convert undefined or null to object"),
-                InternalTypes.Undefined => ExceptionHelper.ThrowTypeError<ObjectInstance>(engine, "Cannot convert undefined or null to object"),
-                _ => ExceptionHelper.ThrowTypeError<ObjectInstance>(engine, "Cannot convert given item to object")
-            };
+                case InternalTypes.Boolean:
+                    return realm.Intrinsics.Boolean.Construct((JsBoolean) value);
+                case InternalTypes.Number:
+                case InternalTypes.Integer:
+                    return realm.Intrinsics.Number.Construct((JsNumber) value);
+                case InternalTypes.BigInt:
+                    return realm.Intrinsics.BigInt.Construct((JsBigInt) value);
+                case InternalTypes.String:
+                    return realm.Intrinsics.String.Construct(value.ToString());
+                case InternalTypes.Symbol:
+                    return realm.Intrinsics.Symbol.Construct((JsSymbol) value);
+                case InternalTypes.Null:
+                case InternalTypes.Undefined:
+                    ExceptionHelper.ThrowTypeError(realm, "Cannot convert undefined or null to object");
+                    return null;
+                default:
+                    ExceptionHelper.ThrowTypeError(realm, "Cannot convert given item to object");
+                    return null;
+            }
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
@@ -525,9 +1012,9 @@ namespace Jint.Runtime
             Node sourceNode,
             string referenceName)
         {
-            if (!engine.Options.ReferenceResolver.CheckCoercible(o))
+            if (!engine._referenceResolver.CheckCoercible(o))
             {
-                ThrowMemberNullOrUndefinedError(engine, o, sourceNode.Location, referenceName);
+                ThrowMemberNullOrUndefinedError(engine, o, sourceNode, referenceName);
             }
         }
 
@@ -535,43 +1022,56 @@ namespace Jint.Runtime
         private static void ThrowMemberNullOrUndefinedError(
             Engine engine,
             JsValue o,
-            in Location location,
+            Node sourceNode,
             string referencedName)
         {
             referencedName ??= "unknown";
             var message = $"Cannot read property '{referencedName}' of {o}";
-            throw new JavaScriptException(engine.TypeError, message).SetCallstack(engine, location);
+            throw new JavaScriptException(engine.Realm.Intrinsics.TypeError, message).SetCallstack(engine, sourceNode.Location);
         }
 
         public static void CheckObjectCoercible(Engine engine, JsValue o)
         {
             if (o._type < InternalTypes.Boolean)
             {
-                ExceptionHelper.ThrowTypeError(engine);
+                ExceptionHelper.ThrowTypeError(engine.Realm);
             }
         }
 
-        internal static IEnumerable<Tuple<MethodDescriptor, JsValue[]>> FindBestMatch(
+        internal readonly record struct MethodMatch(MethodDescriptor Method, JsValue[] Arguments, int Score = 0) : IComparable<MethodMatch>
+        {
+            public int CompareTo(MethodMatch other) => Score.CompareTo(other.Score);
+        }
+
+        internal static IEnumerable<MethodMatch> FindBestMatch(
             Engine engine,
             MethodDescriptor[] methods,
             Func<MethodDescriptor, JsValue[]> argumentProvider)
         {
-            List<Tuple<MethodDescriptor, JsValue[]>> matchingByParameterCount = null;
-            foreach (var m in methods)
+            List<MethodMatch> matchingByParameterCount = null;
+            foreach (var method in methods)
             {
-                var parameterInfos = m.Parameters;
-                var arguments = argumentProvider(m);
-                if (arguments.Length <= parameterInfos.Length 
-                    && arguments.Length >= parameterInfos.Length - m.ParameterDefaultValuesCount)
+                var parameterInfos = method.Parameters;
+                var arguments = argumentProvider(method);
+                if (arguments.Length <= parameterInfos.Length
+                    && arguments.Length >= parameterInfos.Length - method.ParameterDefaultValuesCount)
                 {
-                    if (methods.Length == 0 && arguments.Length == 0)
+                    var score = CalculateMethodScore(engine, method, arguments);
+                    if (score == 0)
                     {
-                        yield return new Tuple<MethodDescriptor, JsValue[]>(m, arguments);
+                        // perfect match
+                        yield return new MethodMatch(method, arguments);
                         yield break;
                     }
 
-                    matchingByParameterCount ??= new List<Tuple<MethodDescriptor, JsValue[]>>();
-                    matchingByParameterCount.Add(new Tuple<MethodDescriptor, JsValue[]>(m, arguments));
+                    if (score < 0)
+                    {
+                        // discard
+                        continue;
+                    }
+
+                    matchingByParameterCount ??= new List<MethodMatch>();
+                    matchingByParameterCount.Add(new MethodMatch(method, arguments, score));
                 }
             }
 
@@ -580,41 +1080,166 @@ namespace Jint.Runtime
                 yield break;
             }
 
-            foreach (var tuple in matchingByParameterCount)
+            if (matchingByParameterCount.Count > 1)
             {
-                var perfectMatch = true;
-                var parameters = tuple.Item1.Parameters;
-                var arguments = tuple.Item2;
-                for (var i = 0; i < arguments.Length; i++)
+                matchingByParameterCount.Sort();
+            }
+
+            foreach (var match in matchingByParameterCount)
+            {
+                yield return match;
+            }
+        }
+
+        /// <summary>
+        /// Method's match score tells how far away it's from ideal candidate. 0 = ideal, bigger the the number,
+        /// the farther away the candidate is from ideal match. Negative signals impossible match.
+        /// </summary>
+        private static int CalculateMethodScore(Engine engine, MethodDescriptor method, JsValue[] arguments)
+        {
+            if (method.Parameters.Length == 0 && arguments.Length == 0)
+            {
+                // perfect
+                return 0;
+            }
+
+            var score = 0;
+            for (var i = 0; i < arguments.Length; i++)
+            {
+                var jsValue = arguments[i];
+                var paramType = method.Parameters[i].ParameterType;
+
+                var parameterScore = CalculateMethodParameterScore(engine, jsValue, paramType);
+                if (parameterScore < 0)
                 {
-                    var arg = arguments[i].ToObject();
-                    var paramType = parameters[i].ParameterType;
-                    if (arg == null)
-                    {
-                        if (!TypeIsNullable(paramType))
-                        {
-                            perfectMatch = false;
-                            break;
-                        }
-                    }
-                    else if (arg.GetType() != paramType)
-                    {
-                        perfectMatch = false;
-                        break;
-                    }
+                    return parameterScore;
+                }
+                score += parameterScore;
+            }
+
+            return score;
+        }
+
+        /// <summary>
+        /// Determines how well parameter type matches target method's type.
+        /// </summary>
+        private static int CalculateMethodParameterScore(
+            Engine engine,
+            JsValue jsValue,
+            Type paramType)
+        {
+            var objectValue = jsValue.ToObject();
+            var objectValueType = objectValue?.GetType();
+
+            if (objectValueType == paramType)
+            {
+                return 0;
+            }
+
+            if (objectValue == null)
+            {
+                if (!TypeIsNullable(paramType))
+                {
+                    // this is bad
+                    return -1;
                 }
 
-                if (perfectMatch)
+                return 0;
+            }
+
+            if (paramType == typeof(JsValue))
+            {
+                // JsValue is convertible to. But it is still not a perfect match
+                return 1;
+            }
+
+            if (paramType == typeof(object))
+            {
+                // a catch-all, prefer others over it
+                return 5;
+            }
+
+            if (paramType == typeof(int) && jsValue.IsInteger())
+            {
+                return 0;
+            }
+
+            if (paramType == typeof(float) && objectValueType == typeof(Double))
+            {
+                return jsValue.IsInteger() ? 1 : 0;
+            }
+
+            if (paramType.IsEnum &&
+                jsValue is JsNumber jsNumber
+                && jsNumber.IsInteger()
+                && paramType.GetEnumUnderlyingType() == typeof(int)
+                && Enum.IsDefined(paramType, jsNumber.AsInteger()))
+            {
+                // we can do conversion from int value to enum
+                return 0;
+            }
+
+            if (paramType.IsAssignableFrom(objectValueType))
+            {
+                // is-a-relation
+                return 1;
+            }
+
+            if (jsValue.IsArray() && objectValueType.IsArray)
+            {
+                // we have potential, TODO if we'd know JS array's internal type we could have exact match
+                return 2;
+            }
+
+            if (CanChangeType(objectValue, paramType))
+            {
+                // forcing conversion isn't ideal not ideal, but works, especially for int -> double for example
+                return 1;
+            }
+
+            if (engine.Options.Interop.AllowOperatorOverloading)
+            {
+                foreach (var m in objectValueType.GetOperatorOverloadMethods())
                 {
-                    yield return new Tuple<MethodDescriptor, JsValue[]>(tuple.Item1, arguments);
-                    yield break;
+                    if (paramType.IsAssignableFrom(m.ReturnType) && m.Name is "op_Implicit" or "op_Explicit")
+                    {
+                        // implicit/explicit operator conversion is OK, but not ideal
+                        return 1;
+                    }
                 }
             }
 
-            for (var i = 0; i < matchingByParameterCount.Count; i++)
+            if (ReflectionExtensions.TryConvertViaTypeCoercion(paramType, engine.Options.Interop.ValueCoercion, jsValue, out _))
             {
-                var tuple = matchingByParameterCount[i];
-                yield return new Tuple<MethodDescriptor, JsValue[]>(tuple.Item1, tuple.Item2);
+                // gray JS zone where we start to do odd things
+                return 10;
+            }
+
+            // will rarely succeed
+            return 100;
+        }
+
+        private static bool CanChangeType(object value, Type targetType)
+        {
+            if (value is null && !targetType.IsValueType)
+            {
+                return true;
+            }
+
+            if (value is not IConvertible)
+            {
+                return false;
+            }
+
+            try
+            {
+                Convert.ChangeType(value, targetType, CultureInfo.InvariantCulture);
+                return true;
+            }
+            catch
+            {
+                // nope
+                return false;
             }
         }
 

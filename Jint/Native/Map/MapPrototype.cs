@@ -10,23 +10,18 @@ namespace Jint.Native.Map
     /// <summary>
     /// https://www.ecma-international.org/ecma-262/6.0/#sec-map-objects
     /// </summary>
-    public sealed class MapPrototype : ObjectInstance
+    public sealed class MapPrototype : Prototype
     {
-        private MapConstructor _mapConstructor;
+        private readonly MapConstructor _mapConstructor;
 
-        private MapPrototype(Engine engine) : base(engine)
+        internal MapPrototype(
+            Engine engine,
+            Realm realm,
+            MapConstructor mapConstructor,
+            ObjectPrototype objectPrototype) : base(engine, realm)
         {
-        }
-
-        public static MapPrototype CreatePrototypeObject(Engine engine, MapConstructor mapConstructor)
-        {
-            var obj = new MapPrototype(engine)
-            {
-                _prototype = engine.Object.PrototypeObject,
-                _mapConstructor = mapConstructor
-            };
-
-            return obj;
+            _prototype = objectPrototype;
+            _mapConstructor = mapConstructor;
         }
 
         protected override void Initialize()
@@ -38,7 +33,7 @@ namespace Jint.Native.Map
                 ["constructor"] = new PropertyDescriptor(_mapConstructor, PropertyFlag.NonEnumerable),
                 ["clear"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "clear", Clear, 0, PropertyFlag.Configurable), propertyFlags),
                 ["delete"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "delete", Delete, 1, PropertyFlag.Configurable), propertyFlags),
-                ["entries"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "entries", Iterator, 0, PropertyFlag.Configurable), propertyFlags),
+                ["entries"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "entries", Entries, 0, PropertyFlag.Configurable), propertyFlags),
                 ["forEach"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "forEach", ForEach, 1, PropertyFlag.Configurable), propertyFlags),
                 ["get"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "get", Get, 1, PropertyFlag.Configurable), propertyFlags),
                 ["has"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "has", Has, 1, PropertyFlag.Configurable), propertyFlags),
@@ -51,7 +46,7 @@ namespace Jint.Native.Map
 
             var symbols = new SymbolDictionary(2)
             {
-                [GlobalSymbolRegistry.Iterator] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "iterator", Iterator, 1, PropertyFlag.Configurable), propertyFlags),
+                [GlobalSymbolRegistry.Iterator] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "iterator", Entries, 1, PropertyFlag.Configurable), propertyFlags),
                 [GlobalSymbolRegistry.ToStringTag] = new PropertyDescriptor("Map", false, false, true),
             };
             SetSymbols(symbols);
@@ -112,7 +107,7 @@ namespace Jint.Native.Map
             return Undefined;
         }
 
-        private ObjectInstance Iterator(JsValue thisObj, JsValue[] arguments)
+        private ObjectInstance Entries(JsValue thisObj, JsValue[] arguments)
         {
             var map = AssertMapInstance(thisObj);
             return map.Iterator();
@@ -132,9 +127,10 @@ namespace Jint.Native.Map
 
         private MapInstance AssertMapInstance(JsValue thisObj)
         {
-            if (!(thisObj is MapInstance map))
+            var map = thisObj as MapInstance;
+            if (map is null)
             {
-                return ExceptionHelper.ThrowTypeError<MapInstance>(_engine, "object must be a Map");
+                ExceptionHelper.ThrowTypeError(_realm, "object must be a Map");
             }
 
             return map;

@@ -3,8 +3,8 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Reflection;
-using System.Threading;
 using Jint.Native;
+using Jint.Native.Iterator;
 using Jint.Native.Object;
 using Jint.Native.Symbol;
 using Jint.Runtime.Descriptors;
@@ -15,33 +15,30 @@ namespace Jint.Runtime.Interop
 	/// <summary>
 	/// Wraps a CLR instance
 	/// </summary>
-	public sealed class ObjectWrapper : ObjectInstance, IObjectWrapper
+	public sealed class ObjectWrapper : ObjectInstance, IObjectWrapper, IEquatable<ObjectWrapper>
     {
         private readonly TypeDescriptor _typeDescriptor;
+        internal bool _allowAddingProperties;
 
         public ObjectWrapper(Engine engine, object obj)
             : base(engine)
         {
             Target = obj;
             _typeDescriptor = TypeDescriptor.Get(obj.GetType());
-            if (_typeDescriptor.IsArrayLike)
+            if (_typeDescriptor.LengthProperty is not null)
             {
                 // create a forwarder to produce length from Count or Length if one of them is present
-                var lengthProperty = obj.GetType().GetProperty("Count") ?? obj.GetType().GetProperty("Length");
-                if (lengthProperty is null)
-                {
-                    return;
-                }
-                var functionInstance = new ClrFunctionInstance(engine, "length", (_, _) => JsNumber.Create((int) lengthProperty.GetValue(obj)));
+                var functionInstance = new ClrFunctionInstance(engine, "length", GetLength);
                 var descriptor = new GetSetPropertyDescriptor(functionInstance, Undefined, PropertyFlag.Configurable);
                 SetProperty(KnownKeys.Length, descriptor);
             }
         }
 
-
         public object Target { get; }
 
         public override bool IsArrayLike => _typeDescriptor.IsArrayLike;
+
+        internal override bool HasOriginalIterator => IsArrayLike;
 
         internal override bool IsIntegerIndexedArray => _typeDescriptor.IsIntegerIndexedArray;
 
@@ -54,14 +51,21 @@ namespace Jint.Runtime.Interop
                 if (_properties is null || !_properties.ContainsKey(member))
                 {
                     // can try utilize fast path
-                    var accessor = GetAccessor(_engine, Target.GetType(), member);
-                    
+                    var accessor = _engine.Options.Interop.TypeResolver.GetAccessor(_engine, Target.GetType(), member);
+
+                    if (ReferenceEquals(accessor, ConstantValueAccessor.NullAccessor) && _allowAddingProperties)
+                    {
+                        // there's no such property, but we can allow extending by calling base
+                        // which will add properties, this allows for example JS class to extend a CLR type
+                        return base.Set(property, value, receiver);
+                    }
+
                     // CanPut logic
-                    if (!accessor.Writable || !_engine.Options._IsClrWriteAllowed)
+                    if (!accessor.Writable || !_engine.Options.Interop.AllowWrite)
                     {
                         return false;
                     }
-                    
+
                     accessor.SetValue(_engine, Target, value);
                     return true;
                 }
@@ -88,6 +92,11 @@ namespace Jint.Runtime.Interop
             return true;
         }
 
+        public override object ToObject()
+        {
+            return Target;
+        }
+
         public override JsValue Get(JsValue property, JsValue receiver)
         {
             if (property.IsInteger() && Target is IList list)
@@ -95,32 +104,11 @@ namespace Jint.Runtime.Interop
                 var index = (int) ((JsNumber) property)._value;
                 return (uint) index < list.Count ? FromObject(_engine, list[index]) : Undefined;
             }
-            
+
             if (property.IsSymbol() && property != GlobalSymbolRegistry.Iterator)
             {
                 // wrapped objects cannot have symbol properties
                 return Undefined;
-            }
-
-            if (property is JsString stringKey)
-            {
-                var member = stringKey.ToString();
-                var result = Engine.Options._MemberAccessor?.Invoke(Engine, Target, member);
-                if (result is not null)
-                {
-                    return result;
-                }
-                
-                if (_properties is null || !_properties.ContainsKey(member))
-                {
-                    // can try utilize fast path
-                    var accessor = GetAccessor(_engine, Target.GetType(), member);
-                    var value = accessor.GetValue(_engine, Target);
-                    if (value is not null)
-                    {
-                        return FromObject(_engine, value);
-                    }
-                }
             }
 
             return base.Get(property, receiver);
@@ -146,12 +134,24 @@ namespace Jint.Runtime.Interop
             var processed = basePropertyKeys.Count > 0 ? new HashSet<JsValue>() : null;
 
             var includeStrings = (types & Types.String) != 0;
-            if (Target is IDictionary dictionary && includeStrings)
+            if (includeStrings && _typeDescriptor.IsStringKeyedGenericDictionary) // expando object for instance
             {
-                // we take values exposed as dictionary keys only 
+                var keys = _typeDescriptor.GetKeys(Target);
+                foreach (var key in keys)
+                {
+                    var jsString = JsString.Create(key);
+                    processed?.Add(jsString);
+                    yield return jsString;
+                }
+            }
+            else if (includeStrings && Target is IDictionary dictionary)
+            {
+                // we take values exposed as dictionary keys only
                 foreach (var key in dictionary.Keys)
                 {
-                    if (_engine.ClrTypeConverter.TryConvert(key, typeof(string), CultureInfo.InvariantCulture, out var stringKey))
+                    object stringKey = key as string;
+                    if (stringKey is not null
+                        || _engine.ClrTypeConverter.TryConvert(key, typeof(string), CultureInfo.InvariantCulture, out stringKey))
                     {
                         var jsString = JsString.Create((string) stringKey);
                         processed?.Add(jsString);
@@ -203,22 +203,38 @@ namespace Jint.Runtime.Interop
                 return x;
             }
 
-            if (property.IsSymbol() && property == GlobalSymbolRegistry.Iterator)
+            // if we have array-like or dictionary or expando, we can provide iterator
+            if (property.IsSymbol() && property == GlobalSymbolRegistry.Iterator && _typeDescriptor.Iterable)
             {
-                var iteratorFunction = new ClrFunctionInstance(Engine, "iterator", (thisObject, arguments) => _engine.Iterator.Construct(this), 1, PropertyFlag.Configurable);
+                var iteratorFunction = new ClrFunctionInstance(
+                    Engine,
+                    "iterator",
+                    Iterator,
+                    1,
+                    PropertyFlag.Configurable);
+
                 var iteratorProperty = new PropertyDescriptor(iteratorFunction, PropertyFlag.Configurable | PropertyFlag.Writable);
                 SetProperty(GlobalSymbolRegistry.Iterator, iteratorProperty);
                 return iteratorProperty;
             }
 
             var member = property.ToString();
-            var result = Engine.Options._MemberAccessor?.Invoke(Engine, Target, member);
+
+            if (_typeDescriptor.IsStringKeyedGenericDictionary)
+            {
+                if (_typeDescriptor.TryGetValue(Target, member, out var value))
+                {
+                    return new PropertyDescriptor(FromObject(_engine, value), PropertyFlag.OnlyEnumerable);
+                }
+            }
+
+            var result = Engine.Options.Interop.MemberAccessor(Engine, Target, member);
             if (result is not null)
             {
                 return new PropertyDescriptor(result, PropertyFlag.OnlyEnumerable);
             }
 
-            var accessor = GetAccessor(_engine, Target.GetType(), member);
+            var accessor = _engine.Options.Interop.TypeResolver.GetAccessor(_engine, Target.GetType(), member);
             var descriptor = accessor.CreatePropertyDescriptor(_engine, Target);
             SetProperty(member, descriptor);
             return descriptor;
@@ -238,198 +254,102 @@ namespace Jint.Runtime.Interop
                     _ => null
                 };
             }
-            return GetAccessor(engine, target.GetType(), member.Name, Factory).CreatePropertyDescriptor(engine, target);
+            return engine.Options.Interop.TypeResolver.GetAccessor(engine, target.GetType(), member.Name, Factory).CreatePropertyDescriptor(engine, target);
         }
 
-        private static ReflectionAccessor GetAccessor(Engine engine, Type type, string member, Func<ReflectionAccessor> accessorFactory = null)
+        private static JsValue Iterator(JsValue thisObj, JsValue[] arguments)
         {
-            var key = new ClrPropertyDescriptorFactoriesKey(type, member);
+            var wrapper = (ObjectWrapper) thisObj;
 
-            var factories = Engine.ReflectionAccessors;
-            if (factories.TryGetValue(key, out var accessor))
-            {
-                return accessor;
-            }
-
-            accessor = accessorFactory?.Invoke() ?? ResolvePropertyDescriptorFactory(engine, type, member);
-            
-            // racy, we don't care, worst case we'll catch up later
-            Interlocked.CompareExchange(ref Engine.ReflectionAccessors,
-                new Dictionary<ClrPropertyDescriptorFactoriesKey, ReflectionAccessor>(factories)
-                {
-                    [key] = accessor
-                }, factories);
-
-            return accessor;
+            return wrapper._typeDescriptor.IsDictionary
+                ? new DictionaryIterator(wrapper._engine, wrapper)
+                : new EnumerableIterator(wrapper._engine, (IEnumerable) wrapper.Target);
         }
 
-        private static ReflectionAccessor ResolvePropertyDescriptorFactory(Engine engine, Type type, string memberName)
+        private static JsValue GetLength(JsValue thisObj, JsValue[] arguments)
         {
-            var isNumber = uint.TryParse(memberName, out _);
-
-            // we can always check indexer if there's one, and then fall back to properties if indexer returns null
-            IndexerAccessor.TryFindIndexer(engine, type, memberName, out var indexerAccessor, out var indexer);
-            
-            // properties and fields cannot be numbers
-            if (!isNumber && TryFindStringPropertyAccessor(type, memberName, indexer, out var temp))
-            {
-                return temp;
-            }
-
-            // if no methods are found check if target implemented indexing
-            if (indexerAccessor != null)
-            {
-                return indexerAccessor;
-            }
-
-            // try to find a single explicit property implementation
-            List<PropertyInfo> list = null;
-            foreach (Type iface in type.GetInterfaces())
-            {
-                foreach (var iprop in iface.GetProperties())
-                {
-                    if (EqualsIgnoreCasing(iprop.Name, memberName))
-                    {
-                        list ??= new List<PropertyInfo>();
-                        list.Add(iprop);
-                    }
-                }
-            }
-
-            if (list?.Count == 1)
-            {
-                return new PropertyAccessor(memberName, list[0]);
-            }
-
-            // try to find explicit method implementations
-            List<MethodInfo> explicitMethods = null;
-            foreach (Type iface in type.GetInterfaces())
-            {
-                foreach (var imethod in iface.GetMethods())
-                {
-                    if (EqualsIgnoreCasing(imethod.Name, memberName))
-                    {
-                        explicitMethods ??= new List<MethodInfo>();
-                        explicitMethods.Add(imethod);
-                    }
-                }
-            }
-
-            if (explicitMethods?.Count > 0)
-            {
-                return new MethodAccessor(MethodDescriptor.Build(explicitMethods));
-            }
-
-            // try to find explicit indexer implementations
-            foreach (var interfaceType in type.GetInterfaces())
-            {
-                if (IndexerAccessor.TryFindIndexer(engine, interfaceType, memberName, out var accessor, out _))
-                {
-                    return accessor;
-                }
-            }
-
-            if (engine.Options._extensionMethods.TryGetExtensionMethods(type, out var extensionMethods))
-            {
-                var matches = new List<MethodInfo>();
-                foreach (var method in extensionMethods)
-                {
-                    if (EqualsIgnoreCasing(method.Name, memberName))
-                    {
-                        matches.Add(method);
-                    }
-                }
-                return new MethodAccessor(MethodDescriptor.Build(matches));
-            }
-
-            return ConstantValueAccessor.NullAccessor;
+            var wrapper = (ObjectWrapper) thisObj;
+            return JsNumber.Create((int) wrapper._typeDescriptor.LengthProperty.GetValue(wrapper.Target));
         }
 
-        private static bool TryFindStringPropertyAccessor(
-            Type type,
-            string memberName,
-            PropertyInfo indexerToTry,
-            out ReflectionAccessor wrapper)
+        public override bool Equals(JsValue obj)
         {
-            // look for a property, bit be wary of indexers, we don't want indexers which have name "Item" to take precedence
-            PropertyInfo property = null;
-            foreach (var p in type.GetProperties(BindingFlags.Static | BindingFlags.Instance | BindingFlags.Public))
-            {
-                // only if it's not an indexer, we can do case-ignoring matches
-                var isStandardIndexer = p.GetIndexParameters().Length == 1 && p.Name == "Item";
-                if (!isStandardIndexer && EqualsIgnoreCasing(p.Name, memberName))
-                {
-                    property = p;
-                    break;
-                }
-            }
-
-            if (property != null)
-            {
-                wrapper = new PropertyAccessor(memberName, property, indexerToTry);
-                return true;
-            }
-
-            // look for a field
-            FieldInfo field = null;
-            foreach (var f in type.GetFields(BindingFlags.Static | BindingFlags.Instance | BindingFlags.Public))
-            {
-                if (EqualsIgnoreCasing(f.Name, memberName))
-                {
-                    field = f;
-                    break;
-                }
-            }
-
-            if (field != null)
-            {
-                wrapper = new FieldAccessor(field, memberName, indexerToTry);
-                return true;
-            }
-
-            // if no properties were found then look for a method
-            List<MethodInfo> methods = null;
-            foreach (var m in type.GetMethods(BindingFlags.Static | BindingFlags.Instance | BindingFlags.Public))
-            {
-                if (EqualsIgnoreCasing(m.Name, memberName))
-                {
-                    methods ??= new List<MethodInfo>();
-                    methods.Add(m);
-                }
-            }
-
-            if (methods?.Count > 0)
-            {
-                wrapper = new MethodAccessor(MethodDescriptor.Build(methods));
-                return true;
-            }
-
-            wrapper = default;
-            return false;
+            return Equals(obj as ObjectWrapper);
         }
 
-        private static bool EqualsIgnoreCasing(string s1, string s2)
+        public override bool Equals(object obj)
         {
-            if (s1.Length != s2.Length)
+            return Equals(obj as ObjectWrapper);
+        }
+
+        public bool Equals(ObjectWrapper other)
+        {
+            if (ReferenceEquals(null, other))
             {
                 return false;
             }
 
-            var equals = false;
-            if (s1.Length > 0)
+            if (ReferenceEquals(this, other))
             {
-                equals = char.ToLowerInvariant(s1[0]) == char.ToLowerInvariant(s2[0]);
+                return true;
             }
 
-            if (@equals && s1.Length > 1)
+            return Equals(Target, other.Target);
+        }
+
+        public override int GetHashCode()
+        {
+            return Target?.GetHashCode() ?? 0;
+        }
+
+        private sealed class DictionaryIterator : IteratorInstance
+        {
+            private readonly ObjectWrapper _target;
+            private readonly IEnumerator<JsValue> _enumerator;
+
+            public DictionaryIterator(Engine engine, ObjectWrapper target) : base(engine)
             {
-#if NETSTANDARD2_1
-                equals = s1.AsSpan(1).SequenceEqual(s2.AsSpan(1));
-#else
-                equals = s1.Substring(1) == s2.Substring(1);
-#endif
+                _target = target;
+                _enumerator = target.EnumerateOwnPropertyKeys(Types.String).GetEnumerator();
             }
-            return equals;
+
+            public override bool TryIteratorStep(out ObjectInstance nextItem)
+            {
+                if (_enumerator.MoveNext())
+                {
+                    var key = _enumerator.Current;
+                    var value = _target.Get(key);
+
+                    nextItem = new KeyValueIteratorPosition(_engine, key, value);
+                    return true;
+                }
+
+                nextItem = KeyValueIteratorPosition.Done(_engine);
+                return false;
+            }
+        }
+
+        private sealed class EnumerableIterator : IteratorInstance
+        {
+            private readonly IEnumerator _enumerator;
+
+            public EnumerableIterator(Engine engine, IEnumerable target) : base(engine)
+            {
+                _enumerator = target.GetEnumerator();
+            }
+
+            public override bool TryIteratorStep(out ObjectInstance nextItem)
+            {
+                if (_enumerator.MoveNext())
+                {
+                    var value = _enumerator.Current;
+                    nextItem = new ValueIteratorPosition(_engine, FromObject(_engine, value));
+                    return true;
+                }
+
+                nextItem = KeyValueIteratorPosition.Done(_engine);
+                return false;
+            }
         }
     }
 }

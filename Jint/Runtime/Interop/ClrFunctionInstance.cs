@@ -19,12 +19,12 @@ namespace Jint.Runtime.Interop
             Func<JsValue, JsValue[], JsValue> func,
             int length = 0,
             PropertyFlag lengthFlags = PropertyFlag.AllForbidden)
-            : base(engine, !string.IsNullOrWhiteSpace(name) ? new JsString(name) : null)
+            : base(engine, engine.Realm, name != null ? new JsString(name) : null)
         {
             _name = name;
             _func = func;
 
-            _prototype = engine.Function.PrototypeObject;
+            _prototype = engine._originalIntrinsics.Function.PrototypeObject;
 
             _length = lengthFlags == PropertyFlag.AllForbidden
                 ? PropertyDescriptor.AllForbiddenDescriptor.ForNumber(length)
@@ -64,17 +64,10 @@ namespace Jint.Runtime.Interop
             {
                 return true;
             }
-            
+
             return false;
         }
 
-        public override string ToString()
-        {
-            //if (FunctionDeclaration is Esprima.Ast.FunctionExpression fx)
-            //{
-            //    return fx.Location.Source?.Substring(fx.Range.Start, fx.Range.End - fx.Range.Start).Replace("\r\n", "\n").Replace("\n", "\r\n");
-            //}
-            return $"function {_name}() {{ [native code] }}";
-        }
+        public override string ToString() => "function " + _name + "() { [native code] }";
     }
 }

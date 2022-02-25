@@ -2,6 +2,7 @@ using System.Collections;
 using System.Collections.Generic;
 using Jint.Native.Number;
 using Jint.Native.Object;
+using Jint.Native.TypedArray;
 using Jint.Runtime;
 using Jint.Runtime.Descriptors;
 
@@ -19,12 +20,17 @@ namespace Jint.Native.Array
                 return new ArrayInstanceOperations(arrayInstance);
             }
 
+            if (instance is TypedArrayInstance typedArrayInstance)
+            {
+                return new TypedArrayInstanceOperations(typedArrayInstance);
+            }
+
             return new ObjectInstanceOperations(instance);
         }
 
-        public static ArrayOperations For(Engine engine, JsValue thisObj)
+        public static ArrayOperations For(Realm realm, JsValue thisObj)
         {
-            var instance = TypeConverter.ToObject(engine, thisObj);
+            var instance = TypeConverter.ToObject(realm, thisObj);
             return For(instance);
         }
 
@@ -51,7 +57,7 @@ namespace Jint.Native.Array
                 var jsValue = Get(i);
                 if ((jsValue.Type & elementTypes) == 0)
                 {
-                    ExceptionHelper.ThrowTypeErrorNoEngine<object>("invalid type");
+                    ExceptionHelper.ThrowTypeErrorNoEngine("invalid type");
                 }
 
                 jsValues[i] = jsValue;
@@ -66,7 +72,7 @@ namespace Jint.Native.Array
 
         public abstract void CreateDataPropertyOrThrow(ulong index, JsValue value);
 
-        public abstract void Set(ulong index, JsValue value, bool updateLength, bool throwOnError);
+        public abstract void Set(ulong index, JsValue value, bool throwOnError);
 
         public abstract void DeletePropertyOrThrow(ulong index);
 
@@ -91,9 +97,9 @@ namespace Jint.Native.Array
                 Reset();
             }
 
-            public JsValue Current 
+            public JsValue Current
             {
-                get 
+                get
                 {
                     if (!_initialized)
                     {
@@ -199,18 +205,14 @@ namespace Jint.Native.Array
             }
 
             public override void SetLength(ulong length)
-            {
-                _target.Set(CommonProperties.Length, length, true);
-            }
+                => _target.Set(CommonProperties.Length, length, true);
 
             public override void EnsureCapacity(ulong capacity)
             {
             }
 
             public override JsValue Get(ulong index)
-            {
-                return _target.Get(JsString.Create(index), _target);
-            }
+                => _target.Get(JsString.Create(index), _target);
 
             public override bool TryGetValue(ulong index, out JsValue value)
             {
@@ -222,19 +224,13 @@ namespace Jint.Native.Array
             }
 
             public override void CreateDataPropertyOrThrow(ulong index, JsValue value)
-            {
-                _target.CreateDataPropertyOrThrow(JsString.Create(index), value);
-            }
+                => _target.CreateDataPropertyOrThrow(JsString.Create(index), value);
 
-            public override void Set(ulong index, JsValue value, bool updateLength, bool throwOnError)
-            {
-                _target.Set(JsString.Create(index), value, throwOnError);
-            }
+            public override void Set(ulong index, JsValue value, bool throwOnError)
+                => _target.Set(JsString.Create(index), value, throwOnError);
 
             public override void DeletePropertyOrThrow(ulong index)
-            {
-                _target.DeletePropertyOrThrow(JsString.Create(index));
-            }
+                => _target.DeletePropertyOrThrow(JsString.Create(index));
         }
 
         private sealed class ArrayInstanceOperations : ArrayOperations<ArrayInstance>
@@ -244,40 +240,25 @@ namespace Jint.Native.Array
             }
 
             public override ulong GetSmallestIndex(ulong length)
-            {
-                return _target.GetSmallestIndex();
-            }
+                => _target.GetSmallestIndex();
 
             public override uint GetLength()
-            {
-                return (uint) ((JsNumber) _target._length._value)._value;
-            }
+                => (uint) ((JsNumber) _target._length._value)._value;
 
             public override ulong GetLongLength()
-            {
-                return (ulong) ((JsNumber) _target._length._value)._value;
-            }
+                => (ulong) ((JsNumber) _target._length._value)._value;
 
             public override void SetLength(ulong length)
-            {
-                _target.Set(CommonProperties.Length, length, true);
-            }
+                => _target.Set(CommonProperties.Length, length, true);
 
             public override void EnsureCapacity(ulong capacity)
-            {
-                _target.EnsureCapacity((uint) capacity);
-            }
+                => _target.EnsureCapacity((uint) capacity);
 
             public override bool TryGetValue(ulong index, out JsValue value)
-            {
                 // array max size is uint
-                return _target.TryGetValue((uint) index, out value);
-            }
+                => _target.TryGetValue((uint) index, out value);
 
-            public override JsValue Get(ulong index)
-            {
-                return _target.Get((uint) index);
-            }
+            public override JsValue Get(ulong index) => _target.Get((uint) index);
 
             public override JsValue[] GetAll(Types elementTypes)
             {
@@ -301,7 +282,7 @@ namespace Jint.Native.Array
                     var jsValue = _target.UnwrapJsValue(prop);
                     if ((jsValue.Type & elementTypes) == 0)
                     {
-                        ExceptionHelper.ThrowTypeErrorNoEngine<object>("invalid type");
+                        ExceptionHelper.ThrowTypeErrorNoEngine("invalid type");
                     }
 
                     jsValues[i] = jsValue;
@@ -311,20 +292,78 @@ namespace Jint.Native.Array
             }
 
             public override void DeletePropertyOrThrow(ulong index)
+                => _target.DeletePropertyOrThrow((uint) index);
+
+            public override void CreateDataPropertyOrThrow(ulong index, JsValue value)
+                => _target.SetIndexValue((uint) index, value, updateLength: false);
+
+            public override void Set(ulong index, JsValue value, bool throwOnError)
+                => _target.Set((uint) index, value, throwOnError);
+        }
+
+        private sealed class TypedArrayInstanceOperations : ArrayOperations
+        {
+            private readonly TypedArrayInstance _target;
+
+            public TypedArrayInstanceOperations(TypedArrayInstance target)
             {
-                _target.DeletePropertyOrThrow((uint) index);
+                _target = target;
+            }
+
+            public override ObjectInstance Target => _target;
+
+            public override ulong GetSmallestIndex(ulong length) => 0;
+
+            public override uint GetLength()
+            {
+                if (!_target.IsConcatSpreadable)
+                {
+                    return _target.Length;
+                }
+
+                var descValue = _target.Get(CommonProperties.Length, _target);
+                if (!ReferenceEquals(descValue, null))
+                {
+                    return (uint) TypeConverter.ToInteger(descValue);
+                }
+
+                return 0;
+            }
+
+            public override ulong GetLongLength() => GetLength();
+
+            public override void SetLength(ulong length)
+            {
+            }
+
+            public override void EnsureCapacity(ulong capacity)
+            {
+            }
+
+            public override JsValue Get(ulong index) => _target[(int) index];
+
+            public override bool TryGetValue(ulong index, out JsValue value)
+            {
+                if (index < _target.Length)
+                {
+                    value = _target[(int) index];
+                    return true;
+                }
+
+                value = JsValue.Undefined;
+                return false;
             }
 
             public override void CreateDataPropertyOrThrow(ulong index, JsValue value)
-            {
-                _target.SetIndexValue((uint) index, value, updateLength: false);
-            }
+                => _target.CreateDataPropertyOrThrow(index, value);
 
-            public override void Set(ulong index, JsValue value, bool updateLength, bool throwOnError)
-            {
-                _target.SetIndexValue((uint) index, value, updateLength);
-            }
+            public override void Set(ulong index, JsValue value, bool throwOnError)
+                => _target[(int) index] = value;
+
+            public override void DeletePropertyOrThrow(ulong index)
+                => _target.DeletePropertyOrThrow(index);
         }
+
     }
 
     /// <summary>

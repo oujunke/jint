@@ -3,24 +3,32 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
+using Esprima;
 using Esprima.Ast;
 using Jint.Native;
 using Jint.Native.Function;
 using Jint.Native.Object;
 using Jint.Runtime;
+using Jint.Runtime.Environments;
 using Jint.Runtime.Interpreter;
 using Jint.Runtime.Interpreter.Expressions;
+using Jint.Runtime.Modules;
 
 namespace Jint
 {
     public static class EsprimaExtensions
     {
-        public static JsValue GetKey(this ClassProperty property, Engine engine) => GetKey(property.Key, engine, property.Computed);
+        public static JsValue GetKey<T>(this T property, Engine engine) where T : ClassProperty => GetKey(property.Key, engine, property.Computed);
 
         public static JsValue GetKey(this Expression expression, Engine engine, bool resolveComputed = false)
         {
             if (expression is Literal literal)
             {
+                if (literal.TokenType == TokenType.NullLiteral)
+                {
+                    return JsValue.Null;
+                }
+
                 return LiteralKeyToString(literal);
             }
 
@@ -31,7 +39,8 @@ namespace Jint
 
             if (!resolveComputed || !TryGetComputedPropertyKey(expression, engine, out var propertyKey))
             {
-                return ExceptionHelper.ThrowArgumentException<JsValue>("Unable to extract correct key, node type: " + expression.Type);
+                ExceptionHelper.ThrowArgumentException("Unable to extract correct key, node type: " + expression.Type);
+                return null;
             }
 
             return propertyKey;
@@ -40,14 +49,20 @@ namespace Jint
         private static bool TryGetComputedPropertyKey<T>(T expression, Engine engine, out JsValue propertyKey)
             where T : Expression
         {
-            if (expression.Type == Nodes.Identifier
-                || expression.Type == Nodes.CallExpression
-                || expression.Type == Nodes.BinaryExpression
-                || expression.Type == Nodes.UpdateExpression
-                || expression.Type == Nodes.AssignmentExpression
-                || expression is StaticMemberExpression)
+            if (expression.Type is Nodes.Identifier
+                or Nodes.CallExpression
+                or Nodes.BinaryExpression
+                or Nodes.UpdateExpression
+                or Nodes.AssignmentExpression
+                or Nodes.UnaryExpression
+                or Nodes.MemberExpression
+                or Nodes.LogicalExpression
+                or Nodes.ConditionalExpression
+                or Nodes.ArrowFunctionExpression
+                or Nodes.FunctionExpression)
             {
-                propertyKey = TypeConverter.ToPropertyKey(JintExpression.Build(engine, expression).GetValue());
+                var context = engine._activeEvaluationContext;
+                propertyKey = TypeConverter.ToPropertyKey(JintExpression.Build(engine, expression).GetValue(context).Value);
                 return true;
             }
 
@@ -56,13 +71,64 @@ namespace Jint
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal static bool IsFunctionWithName<T>(this T node) where T : Node
+        internal static bool IsFunctionDefinition<T>(this T node) where T : Node
         {
             var type = node.Type;
-            return type == Nodes.FunctionExpression 
-                   || type == Nodes.ArrowFunctionExpression 
-                   || type == Nodes.ArrowParameterPlaceHolder 
-                   || type == Nodes.ClassExpression;
+            return type
+                is Nodes.FunctionExpression
+                or Nodes.ArrowFunctionExpression
+                or Nodes.ArrowParameterPlaceHolder
+                or Nodes.ClassExpression;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static bool HasName<T>(this T node) where T : Node
+        {
+            if (!node.IsFunctionDefinition())
+            {
+                return false;
+            }
+
+            if ((node as IFunction)?.Id is not null)
+            {
+                return true;
+            }
+
+            if ((node as ClassExpression)?.Id is not null)
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static bool IsAnonymousFunctionDefinition<T>(this T node) where T : Node
+        {
+            if (!node.IsFunctionDefinition())
+            {
+                return false;
+            }
+
+            if (node.HasName())
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static bool IsOptional<T>(this T node) where T : Expression
+        {
+            switch (node)
+            {
+                case MemberExpression { Optional: true }:
+                case CallExpression { Optional: true }:
+                    return true;
+                default:
+                    return false;
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -73,9 +139,10 @@ namespace Jint
             {
                 return TypeConverter.ToString(d);
             }
+
             return literal.Value as string ?? Convert.ToString(literal.Value, provider: null);
         }
-        
+
         internal static void GetBoundNames(this VariableDeclaration variableDeclaration, List<string> target)
         {
             ref readonly var declarations = ref variableDeclaration.Declarations;
@@ -92,11 +159,17 @@ namespace Jint
             {
                 return;
             }
-            
+
             // try to get away without a loop
             if (parameter is Identifier id)
             {
                 target.Add(id.Name!);
+                return;
+            }
+
+            if (parameter is VariableDeclaration variableDeclaration)
+            {
+                variableDeclaration.GetBoundNames(target);
                 return;
             }
 
@@ -107,7 +180,7 @@ namespace Jint
                     target.Add(identifier.Name!);
                     return;
                 }
-                
+
                 if (parameter is RestElement restElement)
                 {
                     parameter = restElement.Argument;
@@ -141,17 +214,31 @@ namespace Jint
                 else if (parameter is AssignmentPattern assignmentPattern)
                 {
                     parameter = assignmentPattern.Left;
-                    if (assignmentPattern.Right is ClassExpression classExpression)
-                    {
-                        // TODO check if there's more generic rule
-                        if (classExpression.Id is not null)
-                        {
-                            target.Add(classExpression.Id.Name!);
-                        }
-                    }
                     continue;
                 }
+
                 break;
+            }
+        }
+
+        internal static void BindingInitialization(
+            this Expression? expression,
+            EvaluationContext context,
+            JsValue value,
+            EnvironmentRecord env)
+        {
+            if (expression is Identifier identifier)
+            {
+                var catchEnvRecord = (DeclarativeEnvironmentRecord) env;
+                catchEnvRecord.CreateMutableBindingAndInitialize(identifier.Name, canBeDeleted: false, value);
+            }
+            else if (expression is BindingPattern bindingPattern)
+            {
+                BindingPatternAssignmentExpression.ProcessPatterns(
+                    context,
+                    bindingPattern,
+                    value,
+                    env);
             }
         }
 
@@ -162,18 +249,19 @@ namespace Jint
         {
             var engine = obj.Engine;
             var property = TypeConverter.ToPropertyKey(m.GetKey(engine));
-            var prototype = functionPrototype ?? engine.Function.PrototypeObject;
-            var function = m.Value as IFunction ?? ExceptionHelper.ThrowSyntaxError<IFunction>(engine);
-            var functionDefinition = new JintFunctionDefinition(engine, function);
-            var functionThisMode = functionDefinition.Strict || engine._isStrict
-                ? FunctionThisMode.Strict 
-                : FunctionThisMode.Global;
+            var prototype = functionPrototype ?? engine.Realm.Intrinsics.Function.PrototypeObject;
+            var function = m.Value as IFunction;
+            if (function is null)
+            {
+                ExceptionHelper.ThrowSyntaxError(engine.Realm);
+            }
 
+            var functionDefinition = new JintFunctionDefinition(engine, function);
             var closure = new ScriptFunctionInstance(
                 engine,
                 functionDefinition,
                 engine.ExecutionContext.LexicalEnvironment,
-                functionThisMode,
+                functionDefinition.ThisMode,
                 prototype);
 
             closure.MakeMethod(obj);
@@ -181,16 +269,130 @@ namespace Jint
             return new Record(property, closure);
         }
 
-        internal readonly struct Record
+        internal static void GetImportEntries(this ImportDeclaration import, List<ImportEntry> importEntries, HashSet<string> requestedModules)
         {
-            public Record(JsValue key, ScriptFunctionInstance closure)
+            var source = import.Source.StringValue!;
+            var specifiers = import.Specifiers;
+            requestedModules.Add(source!);
+
+            foreach (var specifier in specifiers)
             {
-                Key = key;
-                Closure = closure;
+                switch (specifier)
+                {
+                    case ImportNamespaceSpecifier namespaceSpecifier:
+                        importEntries.Add(new ImportEntry(source, "*", namespaceSpecifier.Local.GetModuleKey()));
+                        break;
+                    case ImportSpecifier importSpecifier:
+                        importEntries.Add(new ImportEntry(source, importSpecifier.Imported.GetModuleKey(), importSpecifier.Local.GetModuleKey()));
+                        break;
+                    case ImportDefaultSpecifier defaultSpecifier:
+                        importEntries.Add(new ImportEntry(source, "default", defaultSpecifier.Local.GetModuleKey()));
+                        break;
+                }
+            }
+        }
+
+        internal static void GetExportEntries(this ExportDeclaration export, List<ExportEntry> exportEntries, HashSet<string> requestedModules)
+        {
+            switch (export)
+            {
+                case ExportDefaultDeclaration defaultDeclaration:
+                    GetExportEntries(true, defaultDeclaration.Declaration, exportEntries);
+                    break;
+                case ExportAllDeclaration allDeclaration:
+                    //Note: there is a pending PR for Esprima to support exporting an imported modules content as a namespace i.e. 'export * as ns from "mod"'
+                    requestedModules.Add(allDeclaration.Source.StringValue!);
+                    exportEntries.Add(new(null, allDeclaration.Source.StringValue, "*", null));
+                    break;
+                case ExportNamedDeclaration namedDeclaration:
+                    var specifiers = namedDeclaration.Specifiers;
+                    if (specifiers.Count == 0)
+                    {
+                        GetExportEntries(false, namedDeclaration.Declaration!, exportEntries, namedDeclaration.Source?.StringValue);
+
+                        if (namedDeclaration.Source is not null)
+                        {
+                            requestedModules.Add(namedDeclaration.Source.StringValue!);
+                        }
+                    }
+                    else
+                    {
+                        foreach (var specifier in specifiers)
+                        {
+                            exportEntries.Add(new(specifier.Local.GetModuleKey(), namedDeclaration.Source?.StringValue, specifier.Exported.GetModuleKey(), null));
+                        }
+                    }
+
+                    break;
+            }
+        }
+
+        private static void GetExportEntries(bool defaultExport, StatementListItem declaration, List<ExportEntry> exportEntries, string? moduleRequest = null)
+        {
+            var names = GetExportNames(declaration);
+
+            if (names.Count == 0)
+            {
+                if (defaultExport)
+                {
+                    exportEntries.Add(new("default", null, null, "*default*"));
+                }
+            }
+            else
+            {
+                for (var i = 0; i < names.Count; i++)
+                {
+                    var name = names[i];
+                    var exportName = defaultExport ? "default" : name;
+                    exportEntries.Add(new(exportName, moduleRequest, null, name));
+                }
+            }
+        }
+
+        private static List<string> GetExportNames(StatementListItem declaration)
+        {
+            var result = new List<string>();
+
+            switch (declaration)
+            {
+                case FunctionDeclaration functionDeclaration:
+                    var funcName = functionDeclaration.Id?.Name;
+                    if (funcName is not null)
+                    {
+                        result.Add(funcName);
+                    }
+
+                    break;
+                case ClassDeclaration classDeclaration:
+                    var className = classDeclaration.Id?.Name;
+                    if (className is not null)
+                    {
+                        result.Add(className);
+                    }
+
+                    break;
+                case VariableDeclaration variableDeclaration:
+                    var declarators = variableDeclaration.Declarations;
+                    foreach (var declarator in declarators)
+                    {
+                        var varName = declarator.Id.As<Identifier>()?.Name;
+                        if (varName is not null)
+                        {
+                            result.Add(varName);
+                        }
+                    }
+
+                    break;
             }
 
-            public readonly JsValue Key;
-            public readonly ScriptFunctionInstance Closure;
+            return result;
         }
+
+        private static string? GetModuleKey(this Expression expression)
+        {
+            return (expression as Identifier)?.Name ?? (expression as Literal)?.StringValue;
+        }
+
+        internal readonly record struct Record(JsValue Key, ScriptFunctionInstance Closure);
     }
 }

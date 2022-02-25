@@ -1,5 +1,6 @@
 using Esprima.Ast;
 using Jint.Native;
+using Jint.Native.Argument;
 using Jint.Runtime.Environments;
 
 namespace Jint.Runtime.Interpreter.Expressions
@@ -9,7 +10,7 @@ namespace Jint.Runtime.Interpreter.Expressions
         internal readonly EnvironmentRecord.BindingName _expressionName;
         private readonly JsValue _calculatedValue;
 
-        public JintIdentifierExpression(Engine engine, Identifier expression) : base(engine, expression)
+        public JintIdentifierExpression(Identifier expression) : base(expression)
         {
             _expressionName = new EnvironmentRecord.BindingName(expression.Name);
             if (expression.Name == "undefined")
@@ -19,39 +20,60 @@ namespace Jint.Runtime.Interpreter.Expressions
         }
 
         public bool HasEvalOrArguments
-            => _expressionName.StringValue._value == KnownKeys.Eval || _expressionName.Key == KnownKeys.Arguments;
+            => _expressionName.Key == KnownKeys.Eval || _expressionName.Key == KnownKeys.Arguments;
 
-        protected override object EvaluateInternal()
+        protected override ExpressionResult EvaluateInternal(EvaluationContext context)
         {
-            var env = _engine.ExecutionContext.LexicalEnvironment;
+            var engine = context.Engine;
+            var env = engine.ExecutionContext.LexicalEnvironment;
             var strict = StrictModeScope.IsStrictModeCode;
-            var identifierEnvironment = LexicalEnvironment.TryGetIdentifierEnvironmentWithBindingValue(env, _expressionName, strict, out var temp, out _)
+            var identifierEnvironment = JintEnvironment.TryGetIdentifierEnvironmentWithBindingValue(engine, env, _expressionName, strict, out var temp, out _)
                 ? temp
                 : JsValue.Undefined;
 
-            return _engine._referencePool.Rent(identifierEnvironment, _expressionName.StringValue, strict, thisValue: null);
+            return NormalCompletion(engine._referencePool.Rent(identifierEnvironment, _expressionName.StringValue, strict, thisValue: null));
         }
 
-        public override JsValue GetValue()
+        public override Completion GetValue(EvaluationContext context)
         {
             // need to notify correct node when taking shortcut
-            _engine._lastSyntaxNode = _expression;
+            context.LastSyntaxNode = _expression;
 
-            if (!(_calculatedValue is null))
+            if (_calculatedValue is not null)
             {
-                return _calculatedValue;
+                return Completion.Normal(_calculatedValue, _expression.Location);
             }
 
             var strict = StrictModeScope.IsStrictModeCode;
-            var env = _engine.ExecutionContext.LexicalEnvironment;
-            return LexicalEnvironment.TryGetIdentifierEnvironmentWithBindingValue(
+            var engine = context.Engine;
+            var env = engine.ExecutionContext.LexicalEnvironment;
+
+            if (JintEnvironment.TryGetIdentifierEnvironmentWithBindingValue(
+                engine,
                 env,
                 _expressionName,
                 strict,
                 out _,
-                out var value)
-                ? value ?? ExceptionHelper.ThrowReferenceError<JsValue>(_engine, _expressionName.Key.Name + " has not been initialized")
-                : _engine.GetValue(_engine._referencePool.Rent(JsValue.Undefined, _expressionName.StringValue, strict, thisValue: null), true);
+                out var value))
+            {
+                if (value is null)
+                {
+                    ExceptionHelper.ThrowReferenceError(engine.Realm, _expressionName.Key.Name + " has not been initialized");
+                }
+            }
+            else
+            {
+                var reference = engine._referencePool.Rent(JsValue.Undefined, _expressionName.StringValue, strict, thisValue: null);
+                value = engine.GetValue(reference, true);
+            }
+
+            // make sure arguments access freezes state
+            if (value is ArgumentsInstance argumentsInstance)
+            {
+                argumentsInstance.Materialize();
+            }
+
+            return Completion.Normal(value, _expression.Location);
         }
     }
 }

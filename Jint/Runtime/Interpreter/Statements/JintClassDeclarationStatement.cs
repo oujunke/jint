@@ -9,24 +9,25 @@ namespace Jint.Runtime.Interpreter.Statements
     {
         private readonly ClassDefinition _classDefinition;
 
-        public JintClassDeclarationStatement(Engine engine, ClassDeclaration classDeclaration) : base(engine, classDeclaration)
+        public JintClassDeclarationStatement(ClassDeclaration classDeclaration) : base(classDeclaration)
         {
             _classDefinition = new ClassDefinition(className: classDeclaration.Id, classDeclaration.SuperClass, classDeclaration.Body);
         }
 
-        protected override Completion ExecuteInternal()
+        protected override Completion ExecuteInternal(EvaluationContext context)
         {
-            var env = _engine.ExecutionContext.LexicalEnvironment;
-            var F = _classDefinition.BuildConstructor(_engine, env);
+            var engine = context.Engine;
+            var env = engine.ExecutionContext.LexicalEnvironment;
+            var F = _classDefinition.BuildConstructor(context, env);
 
             var classBinding = _classDefinition._className;
             if (classBinding != null)
             {
-                env._record.CreateMutableBinding(classBinding);
-                env._record.InitializeBinding(classBinding, F);
+                env.CreateMutableBinding(classBinding);
+                env.InitializeBinding(classBinding, F);
             }
 
-            return new Completion(CompletionType.Normal, null, null, Location);
+            return Completion.Empty();
         }
     }
 }

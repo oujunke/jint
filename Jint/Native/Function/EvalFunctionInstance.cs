@@ -12,27 +12,39 @@ namespace Jint.Native.Function
         private static readonly ParserOptions ParserOptions = new ParserOptions { AdaptRegexp = true, Tolerant = false };
         private static readonly JsString _functionName = new JsString("eval");
 
-        public EvalFunctionInstance(Engine engine) 
-            : base(engine, _functionName, StrictModeScope.IsStrictModeCode ? FunctionThisMode.Strict : FunctionThisMode.Global)
+        public EvalFunctionInstance(
+            Engine engine,
+            Realm realm,
+            FunctionPrototype functionPrototype)
+            : base(
+                engine,
+                realm,
+                _functionName,
+                StrictModeScope.IsStrictModeCode ? FunctionThisMode.Strict : FunctionThisMode.Global)
         {
-            _prototype = Engine.Function.PrototypeObject;
-            _length = PropertyDescriptor.AllForbiddenDescriptor.NumberOne;
+            _prototype = functionPrototype;
+            _length = new PropertyDescriptor(JsNumber.PositiveOne, PropertyFlag.Configurable);
         }
 
         public override JsValue Call(JsValue thisObject, JsValue[] arguments)
         {
-            return PerformEval(arguments, false);
+            var callerRealm = _engine.ExecutionContext.Realm;
+            var x = arguments.At(0);
+            return PerformEval(x, callerRealm, false, false);
         }
 
         /// <summary>
         /// https://tc39.es/ecma262/#sec-performeval
         /// </summary>
-        public JsValue PerformEval(JsValue[] arguments, bool direct)
+        public JsValue PerformEval(JsValue x, Realm callerRealm, bool strictCaller, bool direct)
         {
-            if (!(arguments.At(0) is JsString x))
+            if (!x.IsString())
             {
-                return arguments.At(0);
+                return x;
             }
+
+            var evalRealm = _realm;
+            _engine._host.EnsureCanCompileStrings(callerRealm, evalRealm);
 
             var inFunction = false;
             var inMethod = false;
@@ -40,13 +52,13 @@ namespace Jint.Native.Function
 
             if (direct)
             {
-                var thisEnvRec = _engine.GetThisEnvironment();
+                var thisEnvRec = _engine.ExecutionContext.GetThisEnvironment();
                 if (thisEnvRec is FunctionEnvironmentRecord functionEnvironmentRecord)
                 {
                     var F = functionEnvironmentRecord._functionObject;
                     inFunction = true;
                     inMethod = thisEnvRec.HasSuperBinding();
-                    
+
                     if (F._constructorKind == ConstructorKind.Derived)
                     {
                         inDerivedConstructor = true;
@@ -55,16 +67,21 @@ namespace Jint.Native.Function
             }
 
             var parser = new JavaScriptParser(x.ToString(), ParserOptions);
-            Script script;
+            Script script = null;
             try
             {
-                script = parser.ParseScript(StrictModeScope.IsStrictModeCode);
+                script = parser.ParseScript(strictCaller);
             }
             catch (ParserException e)
             {
-                return e.Description == Messages.InvalidLHSInAssignment 
-                    ? ExceptionHelper.ThrowReferenceError<JsValue>(_engine)
-                    : ExceptionHelper.ThrowSyntaxError<JsValue>(_engine);
+                if (e.Description == Messages.InvalidLHSInAssignment)
+                {
+                    ExceptionHelper.ThrowReferenceError(callerRealm, (string) null);
+                }
+                else
+                {
+                    ExceptionHelper.ThrowSyntaxError(callerRealm, e.Message);
+                }
             }
 
             var body = script.Body;
@@ -76,32 +93,35 @@ namespace Jint.Native.Function
             if (!inFunction)
             {
                 // if body Contains NewTarget, throw a SyntaxError exception.
-            } 
+            }
             if (!inMethod)
             {
                 // if body Contains SuperProperty, throw a SyntaxError exception.
-            } 
+            }
             if (!inDerivedConstructor)
             {
                 // if body Contains SuperCall, throw a SyntaxError exception.
-            } 
+            }
 
             var strictEval = script.Strict || _engine._isStrict;
             var ctx = _engine.ExecutionContext;
 
             using (new StrictModeScope(strictEval))
             {
-                LexicalEnvironment lexEnv;
-                LexicalEnvironment varEnv;
+                EnvironmentRecord lexEnv;
+                EnvironmentRecord varEnv;
+                PrivateEnvironmentRecord privateEnv;
                 if (direct)
                 {
-                    lexEnv = LexicalEnvironment.NewDeclarativeEnvironment(_engine, ctx.LexicalEnvironment);
+                    lexEnv = JintEnvironment.NewDeclarativeEnvironment(_engine, ctx.LexicalEnvironment);
                     varEnv = ctx.VariableEnvironment;
+                    privateEnv = ctx.PrivateEnvironment;
                 }
                 else
                 {
-                    lexEnv = LexicalEnvironment.NewDeclarativeEnvironment(_engine, Engine.GlobalEnvironment);
-                    varEnv = Engine.GlobalEnvironment;
+                    lexEnv = JintEnvironment.NewDeclarativeEnvironment(_engine, evalRealm.GlobalEnv);
+                    varEnv = evalRealm.GlobalEnv;
+                    privateEnv = null;
                 }
 
                 if (strictEval)
@@ -110,15 +130,15 @@ namespace Jint.Native.Function
                 }
 
                 // If ctx is not already suspended, suspend ctx.
-                
-                Engine.EnterExecutionContext(lexEnv, varEnv);
-                
+
+                Engine.EnterExecutionContext(lexEnv, varEnv, evalRealm, privateEnv);
+
                 try
                 {
-                    Engine.EvalDeclarationInstantiation(script, varEnv, lexEnv, strictEval);
+                    Engine.EvalDeclarationInstantiation(script, varEnv, lexEnv, privateEnv, strictEval);
 
-                    var statement = new JintScript(_engine, script);
-                    var result = statement.Execute();
+                    var statement = new JintScript(script);
+                    var result = statement.Execute(_engine._activeEvaluationContext);
                     var value = result.GetValueOrDefault();
 
                     if (result.Type == CompletionType.Throw)

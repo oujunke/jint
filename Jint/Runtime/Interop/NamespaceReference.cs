@@ -33,7 +33,7 @@ namespace Jint.Runtime.Interop
             return false;
         }
 
-        public JsValue Call(JsValue thisObject, JsValue[] arguments)
+        JsValue ICallable.Call(JsValue thisObject, JsValue[] arguments)
         {
             // direct calls on a NamespaceReference constructor object is creating a generic type
             var genericTypes = new Type[arguments.Length];
@@ -41,10 +41,10 @@ namespace Jint.Runtime.Interop
             {
                 var genericTypeReference = arguments[i];
                 if (genericTypeReference.IsUndefined()
-                    || !genericTypeReference.IsObject() 
+                    || !genericTypeReference.IsObject()
                     || genericTypeReference.AsObject().Class != ObjectClass.TypeReference)
                 {
-                    ExceptionHelper.ThrowTypeError(_engine, "Invalid generic type parameter on " + _path + ", if this is not a generic type / method, are you missing a lookup assembly?");
+                    ExceptionHelper.ThrowTypeError(_engine.Realm, "Invalid generic type parameter on " + _path + ", if this is not a generic type / method, are you missing a lookup assembly?");
                 }
 
                 genericTypes[i] = ((TypeReference) genericTypeReference).ReferenceType;
@@ -65,7 +65,8 @@ namespace Jint.Runtime.Interop
             }
             catch (Exception e)
             {
-                return ExceptionHelper.ThrowTypeError<JsValue>(_engine, "Invalid generic type parameter on " + _path + ", if this is not a generic type / method, are you missing a lookup assembly?", e);
+                ExceptionHelper.ThrowTypeError(_engine.Realm, "Invalid generic type parameter on " + _path + ", if this is not a generic type / method, are you missing a lookup assembly?", e);
+                return null;
             }
         }
 
@@ -108,7 +109,7 @@ namespace Jint.Runtime.Interop
 
             // search in lookup assemblies
             var comparedPath = path.Replace("+", ".");
-            foreach (var assembly in _engine.Options._LookupAssemblies)
+            foreach (var assembly in _engine.Options.Interop.AllowedAssemblies)
             {
                 type = assembly.GetType(path);
                 if (type != null)

@@ -11,32 +11,27 @@ using Jint.Runtime.Interpreter.Expressions;
 
 namespace Jint.Native.String
 {
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-string-constructor
+    /// </summary>
     public sealed class StringConstructor : FunctionInstance, IConstructor
     {
         private static readonly JsString _functionName = new JsString("String");
 
-        public StringConstructor(Engine engine)
-            : base(engine, _functionName, FunctionThisMode.Global)
+        public StringConstructor(
+            Engine engine,
+            Realm realm,
+            FunctionPrototype functionPrototype,
+            ObjectPrototype objectPrototype)
+            : base(engine, realm, _functionName, FunctionThisMode.Global)
         {
+            _prototype = functionPrototype;
+            PrototypeObject = new StringPrototype(engine, realm, this, objectPrototype);
+            _length = new PropertyDescriptor(JsNumber.PositiveOne, PropertyFlag.Configurable);
+            _prototypeDescriptor = new PropertyDescriptor(PrototypeObject, PropertyFlag.AllForbidden);
         }
 
-        public static StringConstructor CreateStringConstructor(Engine engine)
-        {
-            var obj = new StringConstructor(engine)
-            {
-                _prototype = engine.Function.PrototypeObject
-            };
-
-            // The value of the [[Prototype]] internal property of the String constructor is the Function prototype object
-            obj.PrototypeObject = StringPrototype.CreatePrototypeObject(engine, obj);
-
-            obj._length = new PropertyDescriptor(JsNumber.One, PropertyFlag.Configurable);
-
-            // The initial value of String.prototype is the String prototype object
-            obj._prototypeDescriptor = new PropertyDescriptor(obj.PrototypeObject, PropertyFlag.AllForbidden);
-
-            return obj;
-        }
+        public StringPrototype PrototypeObject { get; }
 
         protected override void Initialize()
         {
@@ -49,31 +44,42 @@ namespace Jint.Native.String
             SetProperties(properties);
         }
 
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-string.fromcharcode
+        /// </summary>
         private static JsValue FromCharCode(JsValue thisObj, JsValue[] arguments)
         {
-            var chars = new char[arguments.Length];
-            for (var i = 0; i < chars.Length; i++ )
+            var length = arguments.Length;
+
+            if (length == 0)
             {
-                chars[i] = (char)TypeConverter.ToUint16(arguments[i]);
+                return JsString.Empty;
             }
 
-            return JsString.Create(new string(chars));
+            var elements = new char[length];
+            for (var i = 0; i < elements.Length; i++ )
+            {
+                var nextCu = TypeConverter.ToUint16(arguments[i]);
+                elements[i] = (char) nextCu;
+            }
+
+            return JsString.Create(new string(elements));
         }
 
         private JsValue FromCodePoint(JsValue thisObj, JsValue[] arguments)
         {
             var codeUnits = new List<JsValue>();
             string result = "";
-            for (var i = 0; i < arguments.Length; i++ )
+            foreach (var a in arguments)
             {
-                var codePoint = TypeConverter.ToNumber(arguments[i]);
+                var codePoint = TypeConverter.ToNumber(a);
                 if (codePoint < 0
                     || codePoint > 0x10FFFF
                     || double.IsInfinity(codePoint)
                     || double.IsNaN(codePoint)
                     || TypeConverter.ToInt32(codePoint) != codePoint)
                 {
-                    return ExceptionHelper.ThrowRangeError<JsValue>(_engine, "Invalid code point " + codePoint);
+                    ExceptionHelper.ThrowRangeError(_realm, "Invalid code point " + codePoint);
                 }
 
                 var point = (uint) codePoint;
@@ -105,8 +111,8 @@ namespace Jint.Native.String
         /// </summary>
         private JsValue Raw(JsValue thisObj, JsValue[] arguments)
         {
-            var cooked = TypeConverter.ToObject(_engine, arguments.At(0));
-            var raw = TypeConverter.ToObject(_engine, cooked.Get(JintTaggedTemplateExpression.PropertyRaw, cooked));
+            var cooked = TypeConverter.ToObject(_realm, arguments.At(0));
+            var raw = TypeConverter.ToObject(_realm, cooked.Get(JintTaggedTemplateExpression.PropertyRaw, cooked));
 
             var operations = ArrayOperations.For(raw);
             var length = operations.GetLength();
@@ -116,23 +122,21 @@ namespace Jint.Native.String
                 return JsString.Empty;
             }
 
-            using (var result = StringBuilderPool.Rent())
+            using var result = StringBuilderPool.Rent();
+            for (var i = 0; i < length; i++)
             {
-                for (var i = 0; i < length; i++)
+                if (i > 0)
                 {
-                    if (i > 0)
+                    if (i < arguments.Length && !arguments[i].IsUndefined())
                     {
-                        if (i < arguments.Length && !arguments[i].IsUndefined())
-                        {
-                            result.Builder.Append(TypeConverter.ToString(arguments[i]));
-                        }
+                        result.Builder.Append(TypeConverter.ToString(arguments[i]));
                     }
-
-                    result.Builder.Append(TypeConverter.ToString(operations.Get((ulong) i)));
                 }
 
-                return result.ToString();
+                result.Builder.Append(TypeConverter.ToString(operations.Get((ulong) i)));
             }
+
+            return result.ToString();
         }
 
         public override JsValue Call(JsValue thisObject, JsValue[] arguments)
@@ -151,19 +155,32 @@ namespace Jint.Native.String
         }
 
         /// <summary>
-        /// http://www.ecma-international.org/ecma-262/5.1/#sec-15.7.2.1
+        /// https://tc39.es/ecma262/#sec-string-constructor-string-value
         /// </summary>
-        public ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+        ObjectInstance IConstructor.Construct(JsValue[] arguments, JsValue newTarget)
         {
-            string value = "";
-            if (arguments.Length > 0)
+            JsString s;
+            if (arguments.Length == 0)
             {
-                value = TypeConverter.ToString(arguments[0]);
+                s = JsString.Empty;
             }
-            return Construct(value);
-        }
+            else
+            {
+                var value = arguments.At(0);
+                if (newTarget.IsUndefined() && value.IsSymbol())
+                {
+                    return StringCreate(JsString.Create(((JsSymbol) value).ToString()), PrototypeObject);
+                }
+                s = TypeConverter.ToJsString(arguments[0]);
+            }
 
-        public StringPrototype PrototypeObject { get; private set; }
+            if (newTarget.IsUndefined())
+            {
+                return StringCreate(s, PrototypeObject);
+            }
+
+            return StringCreate(s, GetPrototypeFromConstructor(newTarget, static intrinsics => intrinsics.String.PrototypeObject));
+        }
 
         public StringInstance Construct(string value)
         {
@@ -172,10 +189,18 @@ namespace Jint.Native.String
 
         public StringInstance Construct(JsString value)
         {
+            return StringCreate(value, PrototypeObject);
+        }
+
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-stringcreate
+        /// </summary>
+        private StringInstance StringCreate(JsString value, ObjectInstance prototype)
+        {
             var instance = new StringInstance(Engine)
             {
-                _prototype = PrototypeObject,
-                PrimitiveValue = value,
+                _prototype = prototype,
+                StringData = value,
                 _length = PropertyDescriptor.AllForbiddenDescriptor.ForNumber(value.Length)
             };
 

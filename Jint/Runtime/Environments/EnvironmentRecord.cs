@@ -1,14 +1,18 @@
-﻿using Jint.Native;
+﻿#nullable enable
+
+using System.Diagnostics;
+using Jint.Native;
 
 namespace Jint.Runtime.Environments
 {
     /// <summary>
     /// Base implementation of an Environment Record
-    /// http://www.ecma-international.org/ecma-262/5.1/#sec-10.2.1
+    /// https://tc39.es/ecma262/#sec-environment-records
     /// </summary>
     public abstract class EnvironmentRecord : JsValue
     {
-        protected readonly Engine _engine;
+        protected internal readonly Engine _engine;
+        protected internal EnvironmentRecord? _outerEnv;
 
         protected EnvironmentRecord(Engine engine) : base(InternalTypes.ObjectEnvironmentRecord)
         {
@@ -81,12 +85,6 @@ namespace Jint.Runtime.Environments
         public abstract JsValue WithBaseObject();
 
         /// <summary>
-        /// Returns the value to use as the <c>this</c> value on calls to function objects that are obtained as binding values from this environment record.
-        /// </summary>
-        /// <returns>The value to use as <c>this</c>.</returns>
-        public abstract JsValue ImplicitThisValue();
-
-        /// <summary>
         /// Returns an array of all the defined binding names
         /// </summary>
         /// <returns>The array of all defined bindings</returns>
@@ -94,21 +92,24 @@ namespace Jint.Runtime.Environments
 
         public override object ToObject()
         {
-            return ExceptionHelper.ThrowNotSupportedException<object>();
+            ExceptionHelper.ThrowNotSupportedException();
+            return null;
         }
 
         public override bool Equals(JsValue other)
         {
-            return ExceptionHelper.ThrowNotSupportedException<bool>();
+            ExceptionHelper.ThrowNotSupportedException();
+            return false;
         }
 
         public abstract JsValue GetThisBinding();
 
-        public JsValue NewTarget { get; protected set; }
+        public JsValue? NewTarget { get; protected set; }
 
         /// <summary>
         /// Helper to cache JsString/Key when environments use different lookups.
         /// </summary>
+        [DebuggerDisplay("\"{Key.Name}\"")]
         internal readonly struct BindingName
         {
             public readonly Key Key;

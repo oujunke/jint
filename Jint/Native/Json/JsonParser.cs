@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Linq;
 using Esprima;
 using Esprima.Ast;
 using Jint.Native.Object;
@@ -98,7 +97,7 @@ namespace Jint.Native.Json
                 }
                 else
                 {
-                    ExceptionHelper.ThrowSyntaxError(_engine, $"Expected hexadecimal digit:{_source}");
+                    ThrowError(_index, Messages.ExpectedHexadecimalDigit);
                 }
             }
             return (char)code;
@@ -143,17 +142,20 @@ namespace Jint.Native.Json
                 case 126: // ~
                     ++_index;
 
+                    string value = TypeConverter.ToString(code);
                     return new Token
-                        {
-                            Type = Tokens.Punctuator,
-                            Value = TypeConverter.ToString(code),
-                            LineNumber = _lineNumber,
-                            LineStart = _lineStart,
-                            Range = new[] {start, _index}
-                        };
+                    {
+                        Type = Tokens.Punctuator,
+                        Text = value,
+                        Value = value,
+                        LineNumber = _lineNumber,
+                        LineStart = _lineStart,
+                        Range = new[] { start, _index }
+                    };
             }
 
-            return ExceptionHelper.ThrowSyntaxError<Token>(_engine, string.Format(Messages.UnexpectedToken, code));
+            ThrowError(start, Messages.UnexpectedToken, code);
+            return null;
         }
 
         private Token ScanNumericLiteral()
@@ -182,7 +184,7 @@ namespace Jint.Native.Json
                     // decimal number starts with '0' such as '09' is illegal.
                     if (ch > 0 && IsDecimalDigit(ch))
                     {
-                        ExceptionHelper.ThrowSyntaxError(_engine, string.Format(Messages.UnexpectedToken, ch));
+                        ThrowError(_index, Messages.UnexpectedToken, ch);
                     }
                 }
 
@@ -221,13 +223,14 @@ namespace Jint.Native.Json
                 }
                 else
                 {
-                    ExceptionHelper.ThrowSyntaxError(_engine, string.Format(Messages.UnexpectedToken, _source.CharCodeAt(_index)));
+                    ThrowError(_index, Messages.UnexpectedToken, _source.CharCodeAt(_index));
                 }
             }
 
             return new Token
                 {
                     Type = Tokens.Number,
+                    Text = number,
                     Value = Double.Parse(number, NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint | NumberStyles.AllowExponent, CultureInfo.InvariantCulture),
                     LineNumber = _lineNumber,
                     LineStart = _lineStart,
@@ -250,6 +253,7 @@ namespace Jint.Native.Json
                 return new Token
                 {
                     Type = Tokens.BooleanLiteral,
+                    Text = s,
                     Value = s == "true",
                     LineNumber = _lineNumber,
                     LineStart = _lineStart,
@@ -257,7 +261,8 @@ namespace Jint.Native.Json
                 };
             }
 
-            return ExceptionHelper.ThrowSyntaxError<Token>(_engine, string.Format(Messages.UnexpectedToken, s));
+            ThrowError(start, Messages.UnexpectedToken, s);
+            return null;
         }
 
         private Token ScanNullLiteral()
@@ -275,6 +280,7 @@ namespace Jint.Native.Json
                 return new Token
                 {
                     Type = Tokens.NullLiteral,
+                    Text = s,
                     Value = Null.Instance,
                     LineNumber = _lineNumber,
                     LineStart = _lineStart,
@@ -282,7 +288,8 @@ namespace Jint.Native.Json
                 };
             }
 
-            return ExceptionHelper.ThrowSyntaxError<Token>(_engine, string.Format(Messages.UnexpectedToken, s));
+            ThrowError(start, Messages.UnexpectedToken, s);
+            return null;
         }
 
         private Token ScanStringLiteral()
@@ -306,7 +313,7 @@ namespace Jint.Native.Json
 
                 if (ch <= 31)
                 {
-                    ExceptionHelper.ThrowSyntaxError(_engine, $"Invalid character '{ch}', position:{_index}, string:{_source}");
+                    ThrowError(_index - 1, Messages.InvalidCharacter);
                 }
 
                 if (ch == '\\')
@@ -398,16 +405,19 @@ namespace Jint.Native.Json
 
             if (quote != 0)
             {
-                ExceptionHelper.ThrowSyntaxError(_engine, string.Format(Messages.UnexpectedToken, _source));
+                // unterminated string literal
+                ThrowError(_index, Messages.UnexpectedEOS);
             }
 
+            string value = sb.ToString();
             return new Token
-                {
+            {
                     Type = Tokens.String,
-                    Value = sb.ToString(),
+                    Text = value,
+                    Value = value,
                     LineNumber = _lineNumber,
                     LineStart = _lineStart,
-                    Range = new[] {start, _index}
+                    Range = new[] { start, _index }
                 };
         }
 
@@ -500,6 +510,7 @@ namespace Jint.Native.Json
                 _extra.Tokens.Add(new Token
                     {
                         Type = token.Type,
+                        Text = value,
                         Value = value,
                         Range = range,
                     });
@@ -600,29 +611,15 @@ namespace Jint.Native.Json
             return node;
         }
 
-        public ObjectInstance CreateArrayInstance(IEnumerable<JsValue> values)
-        {
-            var jsValues = values.ToArray();
-            var jsArray = _engine.Array.Construct(jsValues.Length);
-            _engine.Array.PrototypeObject.Push(jsArray, jsValues);
-            return jsArray;
-        }
-
-        // Throw an exception
-
         private void ThrowError(Token token, string messageFormat, params object[] arguments)
         {
-            string msg = System.String.Format(messageFormat, arguments);
-            int lineNumber = token.LineNumber ?? _lineNumber;
+            ThrowError(token.Range[0], messageFormat, arguments);
+        }
 
-            var error = new ParseError(
-                    description: msg,
-                    source: _source,
-                    index: token.Range[0],
-                    position: new Position(token.LineNumber ?? _lineNumber, token.Range[0] - _lineStart + 1));
-            var exception = new ParserException("Line " + lineNumber  + ": " + msg, error);
-            
-            throw exception;
+        private void ThrowError(int position, string messageFormat, params object[] arguments)
+        {
+            string msg = System.String.Format(messageFormat, arguments);
+            ExceptionHelper.ThrowSyntaxError(_engine.Realm, $"{msg} at position {position}");
         }
 
         // Throw an exception because of the token.
@@ -645,7 +642,7 @@ namespace Jint.Native.Json
             }
 
             // BooleanLiteral, NullLiteral, or Punctuator.
-            ThrowError(token, Messages.UnexpectedToken, token.Value as string);
+            ThrowError(token, Messages.UnexpectedToken, token.Text);
         }
 
         // Expect the next token to match the specified punctuator.
@@ -693,14 +690,14 @@ namespace Jint.Native.Json
 
             Expect("]");
 
-            return CreateArrayInstance(elements);
+            return _engine.Realm.Intrinsics.Array.ConstructFast(elements);
         }
 
         public ObjectInstance ParseJsonObject()
         {
             Expect("{");
 
-            var obj = _engine.Object.Construct(Arguments.Empty);
+            var obj = _engine.Realm.Intrinsics.Object.Construct(Arguments.Empty);
 
             while (!Match("}"))
             {
@@ -710,10 +707,11 @@ namespace Jint.Native.Json
                     ThrowUnexpected(Lex());
                 }
 
-                var name = Lex().Value.ToString();
-                if (PropertyNameContainsInvalidChar0To31(name))
+                var nameToken = Lex();
+                var name = nameToken.Value.ToString();
+                if (PropertyNameContainsInvalidCharacters(name))
                 {
-                    ExceptionHelper.ThrowSyntaxError(_engine, $"Invalid character in property name '{name}'");
+                    ThrowError(nameToken, Messages.InvalidCharacter);
                 }
 
                 Expect(":");
@@ -732,14 +730,12 @@ namespace Jint.Native.Json
             return obj;
         }
 
-        private static bool PropertyNameContainsInvalidChar0To31(string s)
+        private static bool PropertyNameContainsInvalidCharacters(string propertyName)
         {
-            const int max = 31;
-
-            for (var i = 0; i < s.Length; i++)
+            const char max = (char) 31;
+            foreach (var c in propertyName)
             {
-                var val = (int)s[i];
-                if (val <= max)
+                if (c != '\t' && c <= max)
                     return true;
             }
             return false;
@@ -838,7 +834,7 @@ namespace Jint.Native.Json
 
                 if(_lookahead.Type != Tokens.EOF)
                 {
-                    ExceptionHelper.ThrowSyntaxError(_engine, $"Unexpected {_lookahead.Type} {_lookahead.Value}");
+                    ThrowError(_lookahead, Messages.UnexpectedToken, _lookahead.Text);
                 }
                 return jsv;
             }
@@ -870,6 +866,7 @@ namespace Jint.Native.Json
         {
             public Tokens Type;
             public object Value;
+            public string Text;
             public int[] Range;
             public int? LineNumber;
             public int LineStart;
@@ -877,10 +874,12 @@ namespace Jint.Native.Json
 
         static class Messages
         {
-            public const string UnexpectedToken = "Unexpected token '{0}'";
-            public const string UnexpectedNumber = "Unexpected number";
-            public const string UnexpectedString = "Unexpected string";
-            public const string UnexpectedEOS = "Unexpected end of input";
+            public const string InvalidCharacter = "Invalid character in JSON";
+            public const string ExpectedHexadecimalDigit = "Expected hexadecimal digit in JSON";
+            public const string UnexpectedToken = "Unexpected token '{0}' in JSON";
+            public const string UnexpectedNumber = "Unexpected number in JSON";
+            public const string UnexpectedString = "Unexpected string in JSON";
+            public const string UnexpectedEOS = "Unexpected end of JSON input";
         };
 
         struct State

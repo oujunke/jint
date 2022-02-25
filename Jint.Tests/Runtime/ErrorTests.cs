@@ -1,5 +1,6 @@
 ﻿using Esprima;
 using Jint.Runtime;
+using Jint.Tests.Runtime.TestClasses;
 using System;
 using System.Collections.Generic;
 using Xunit;
@@ -58,24 +59,113 @@ var c = a(b().Length);
         {
             var engine = new Engine();
 
-            engine.Execute(@"var a = function(v) {
-    return v.xxx.yyy;
+            engine.Execute(@"
+var a = function(v) {
+  return v.xxx.yyy;
 }
 
 var b = function(v) {
-	return a(v);
-}", new ParserOptions("custom.js") { Loc = true });
+  return a(v);
+}
+            ", new ParserOptions("custom.js"));
 
-            var e = Assert.Throws<JavaScriptException>(() => engine.Execute("var x = b(7);", new ParserOptions("main.js") { Loc = true } ));
+            var e = Assert.Throws<JavaScriptException>(() => engine.Execute("var x = b(7);", new ParserOptions("main.js")));
             Assert.Equal("Cannot read property 'yyy' of undefined", e.Message);
-            Assert.Equal(2, e.Location.Start.Line);
-            Assert.Equal(17, e.Location.Start.Column);
+            Assert.Equal(3, e.Location.Start.Line);
+            Assert.Equal(15, e.Location.Start.Column);
             Assert.Equal("custom.js", e.Location.Source);
 
             var stack = e.StackTrace;
-            EqualIgnoringNewLineDifferences(@"   at a (v) custom.js:2:18
-   at b (v) custom.js:6:9
+            EqualIgnoringNewLineDifferences(@"   at a (v) custom.js:3:16
+   at b (v) custom.js:7:10
    at main.js:1:9", stack);
+        }
+
+        [Fact]
+        public void ErrorObjectHasTheStackTraceImmediately()
+        {
+            var engine = new Engine();
+
+            engine.Execute(@"
+var a = function(v) {
+  return Error().stack;
+}
+
+var b = function(v) {
+  return a(v);
+}
+            ", new ParserOptions("custom.js"));
+
+            var e = engine.Evaluate(@"b(7)", new ParserOptions("main.js")).AsString();
+
+            var stack = e;
+            EqualIgnoringNewLineDifferences(@"   at Error custom.js:3:10
+   at a (v) custom.js:3:10
+   at b (v) custom.js:7:10
+   at main.js:1:1", stack);
+        }
+
+        [Fact]
+        public void ThrownErrorObjectHasStackTraceInCatch()
+        {
+            var engine = new Engine();
+
+            engine.Execute(@"
+var a = function(v) {
+  try {
+    throw Error();
+  } catch(err) {
+    return err.stack;
+  }
+}
+
+var b = function(v) {
+  return a(v);
+}
+            ", new ParserOptions("custom.js"));
+
+            var e = engine.Evaluate(@"b(7)", new ParserOptions("main.js")).AsString();
+
+            var stack = e;
+            EqualIgnoringNewLineDifferences(@"   at Error custom.js:4:11
+   at a (v) custom.js:4:11
+   at b (v) custom.js:11:10
+   at main.js:1:1", stack);
+        }
+
+
+        [Fact]
+        public void GeneratedErrorHasStackTraceInCatch()
+        {
+            var engine = new Engine();
+
+            engine.Execute(@"
+var a = function(v) {
+  try {
+    var a = ''.xyz();
+  } catch(err) {
+    return err.stack;
+  }
+}
+
+var b = function(v) {
+  return a(v);
+}
+            ", new ParserOptions("custom.js"));
+
+            var e = engine.Evaluate(@"b(7)", new ParserOptions("main.js")).AsString();
+
+            var stack = e;
+            EqualIgnoringNewLineDifferences(@"   at a (v) custom.js:4:13
+   at b (v) custom.js:11:10
+   at main.js:1:1", stack);
+        }
+
+        [Fact]
+        public void ErrorObjectHasOwnPropertyStack()
+        {
+            var res = new Engine().Evaluate(@"Error().hasOwnProperty('stack')").AsBoolean();
+            Assert.True(res);
         }
 
         private class Folder
@@ -99,15 +189,16 @@ var b = function(v) {
                     Name = "SubFolder1",
                     Parent = new Folder
                     {
-                        Name = "Root", Parent = null,
+                        Name = "Root",
+                        Parent = null,
                     }
                 }
             };
 
             engine.SetValue("folder", folder);
 
-            var javaScriptException =  Assert.Throws<JavaScriptException>(() =>
-            engine.Execute(@"
+            var javaScriptException = Assert.Throws<JavaScriptException>(() =>
+           engine.Execute(@"
                 var Test = {
                     recursive: function(folderInstance) {
                         // Enabling the guard here corrects the problem, but hides the hard fault
@@ -119,7 +210,7 @@ var b = function(v) {
                 }
 
                 Test.recursive(folder);"
-            ));
+           ));
 
             Assert.Equal("Cannot read property 'Name' of null", javaScriptException.Message);
             EqualIgnoringNewLineDifferences(@"   at recursive (folderInstance) <anonymous>:6:44
@@ -155,8 +246,70 @@ var x = b(7);";
    at a (v) <anonymous>:2:18
    at b (v) <anonymous>:6:12
    at <anonymous>:9:9";
-            
+
             EqualIgnoringNewLineDifferences(expected, ex.ToString());
+        }
+
+        [Fact]
+        public void StackTraceCollectedForImmediatelyInvokedFunctionExpression()
+        {
+            var engine = new Engine();
+            const string script = @"function getItem(items, itemIndex) {
+    var item = items[itemIndex];
+
+    return item;
+}
+
+(function (getItem) {
+    var items = null,
+        item = getItem(items, 5)
+        ;
+
+    return item;
+})(getItem);";
+
+            var parserOptions = new ParserOptions("get-item.js")
+            {
+                AdaptRegexp = true,
+                Tolerant = true
+            };
+            var ex = Assert.Throws<JavaScriptException>(() => engine.Execute(script, parserOptions));
+
+            const string expected = @"Jint.Runtime.JavaScriptException: Cannot read property '5' of null
+   at getItem (items, itemIndex) get-item.js:2:22
+   at (anonymous) (getItem) get-item.js:9:16
+   at get-item.js:13:2";
+
+            EqualIgnoringNewLineDifferences(expected, ex.ToString());
+        }
+
+        [Fact]
+        public void StackTraceIsForOriginalException()
+        {
+            var engine = new Engine();
+            engine.SetValue("HelloWorld", new HelloWorld());
+            const string script = @"HelloWorld.ThrowException();";
+
+            var ex = Assert.Throws<DivideByZeroException>(() => engine.Execute(script));
+
+            const string expected = "HelloWorld";
+
+            ContainsIgnoringNewLineDifferences(expected, ex.ToString());
+        }
+
+        [Theory]
+        [InlineData("Error")]
+        [InlineData("EvalError")]
+        [InlineData("RangeError")]
+        [InlineData("SyntaxError")]
+        [InlineData("TypeError")]
+        [InlineData("ReferenceError")]
+        public void ErrorsHaveCorrectConstructor(string type)
+        {
+            var engine = new Engine();
+            engine.Execute($"const o = new {type}();");
+            Assert.True(engine.Evaluate($"o.constructor === {type}").AsBoolean());
+            Assert.Equal(type, engine.Evaluate("o.constructor.name").AsString());
         }
 
         private static void EqualIgnoringNewLineDifferences(string expected, string actual)
@@ -164,6 +317,13 @@ var x = b(7);";
             expected = expected.Replace("\r\n", "\n");
             actual = actual.Replace("\r\n", "\n");
             Assert.Equal(expected, actual);
+        }
+
+        private static void ContainsIgnoringNewLineDifferences(string expectedSubstring, string actualString)
+        {
+            expectedSubstring = expectedSubstring.Replace("\r\n", "\n");
+            actualString = actualString.Replace("\r\n", "\n");
+            Assert.Contains(expectedSubstring, actualString);
         }
     }
 }

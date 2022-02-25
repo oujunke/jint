@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Text.RegularExpressions;
+using Jint.Native;
 using Jint.Native.Array;
 using Xunit;
 
@@ -36,7 +37,7 @@ namespace Jint.Tests.Runtime
         public void PreventsInfiniteLoop()
         {
             var engine = new Engine();
-            var result = (ArrayInstance)engine.Execute("'x'.match(/|/g);").GetCompletionValue();
+            var result = (ArrayInstance)engine.Evaluate("'x'.match(/|/g);");
             Assert.Equal((uint) 2, result.Length);
             Assert.Equal("", result[0]);
             Assert.Equal("", result[1]);
@@ -46,7 +47,7 @@ namespace Jint.Tests.Runtime
         public void ToStringWithNonRegExpInstanceAndMissingProperties()
         {
             var engine = new Engine();
-            var result = engine.Execute("/./['toString'].call({})").GetCompletionValue().AsString();
+            var result = engine.Evaluate("/./['toString'].call({})").AsString();
 
             Assert.Equal("/undefined/undefined", result);
         }
@@ -55,7 +56,7 @@ namespace Jint.Tests.Runtime
         public void ToStringWithNonRegExpInstanceAndValidProperties()
         {
             var engine = new Engine();
-            var result = engine.Execute("/./['toString'].call({ source: 'a', flags: 'b' })").GetCompletionValue().AsString();
+            var result = engine.Evaluate("/./['toString'].call({ source: 'a', flags: 'b' })").AsString();
 
             Assert.Equal("/a/b", result);
         }
@@ -65,9 +66,28 @@ namespace Jint.Tests.Runtime
         public void ToStringWithRealRegExpInstance()
         {
             var engine = new Engine();
-            var result = engine.Execute("/./['toString'].call(/test/g)").GetCompletionValue().AsString();
+            var result = engine.Evaluate("/./['toString'].call(/test/g)").AsString();
 
             Assert.Equal("/test/g", result);
+        }
+
+        [Fact]
+        public void ShouldNotThrowErrorOnIncompatibleRegex()
+        {
+            var engine = new Engine();
+            Assert.NotNull(engine.Evaluate(@"/[^]*?(:[rp][el]a[\w-]+)[^]*/"));
+            Assert.NotNull(engine.Evaluate("/[^]a/"));
+            Assert.NotNull(engine.Evaluate("new RegExp('[^]a')"));
+
+            Assert.NotNull(engine.Evaluate("/[]/"));
+            Assert.NotNull(engine.Evaluate("new RegExp('[]')"));
+        }
+
+        [Fact]
+        public void ShouldNotThrowErrorOnRegExNumericNegation()
+        {
+            var engine = new Engine();
+            Assert.True(ReferenceEquals(JsNumber.DoubleNaN, engine.Evaluate("-/[]/")));
         }
     }
 }

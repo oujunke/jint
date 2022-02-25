@@ -1,4 +1,5 @@
 using Esprima.Ast;
+using Jint.Native;
 using Jint.Native.Function;
 
 namespace Jint.Runtime.Interpreter.Expressions
@@ -7,24 +8,30 @@ namespace Jint.Runtime.Interpreter.Expressions
     {
         private readonly JintFunctionDefinition _function;
 
-        public JintArrowFunctionExpression(Engine engine, IFunction function)
-            : base(engine, ArrowParameterPlaceHolder.Empty)
+        public JintArrowFunctionExpression(Engine engine, ArrowFunctionExpression function)
+            : base(ArrowParameterPlaceHolder.Empty)
         {
             _function = new JintFunctionDefinition(engine, function);
         }
 
-        protected override object EvaluateInternal()
+        protected override ExpressionResult EvaluateInternal(EvaluationContext context)
         {
-            var scope = _engine.ExecutionContext.LexicalEnvironment;
+            var engine = context.Engine;
+            var scope = engine.ExecutionContext.LexicalEnvironment;
 
             var closure = new ScriptFunctionInstance(
-                _engine,
+                engine,
                 _function,
                 scope,
                 FunctionThisMode.Lexical,
-                proto: _engine.Function.PrototypeObject);
-            
-            return closure;
+                proto: engine.Realm.Intrinsics.Function.PrototypeObject);
+
+            if (_function.Name is null)
+            {
+                closure.SetFunctionName(JsString.Empty);
+            }
+
+            return NormalCompletion(closure);
         }
     }
 }

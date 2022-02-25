@@ -6,6 +6,7 @@ using Jint.Native.Array;
 using Jint.Native.Function;
 using Jint.Native.Iterator;
 using Jint.Native.Object;
+using Jint.Runtime.Interpreter;
 using Jint.Runtime.Interpreter.Expressions;
 
 namespace Jint.Runtime.Environments
@@ -27,13 +28,13 @@ namespace Jint.Runtime.Environments
         internal readonly FunctionInstance _functionObject;
 
         public FunctionEnvironmentRecord(
-            Engine engine, 
+            Engine engine,
             FunctionInstance functionObject,
             JsValue newTarget) : base(engine)
         {
             _functionObject = functionObject;
             NewTarget = newTarget;
-            if (functionObject._functionDefinition.Function is ArrowFunctionExpression)
+            if (functionObject._functionDefinition?.Function is ArrowFunctionExpression)
             {
                 _thisBindingStatus = ThisBindingStatus.Lexical;
             }
@@ -46,21 +47,14 @@ namespace Jint.Runtime.Environments
 
         public override bool HasThisBinding() => _thisBindingStatus != ThisBindingStatus.Lexical;
 
-        public override bool HasSuperBinding() => 
+        public override bool HasSuperBinding() =>
             _thisBindingStatus != ThisBindingStatus.Lexical && !_functionObject._homeObject.IsUndefined();
-
-        public override JsValue WithBaseObject()
-        {
-            return _thisBindingStatus == ThisBindingStatus.Uninitialized
-                ? ExceptionHelper.ThrowReferenceError<JsValue>(_engine)
-                : _thisValue;
-        }
 
         public JsValue BindThisValue(JsValue value)
         {
             if (_thisBindingStatus == ThisBindingStatus.Initialized)
             {
-                ExceptionHelper.ThrowReferenceError<JsValue>(_engine);
+                ExceptionHelper.ThrowReferenceError(_functionObject._realm, (string) null);
             }
             _thisValue = value;
             _thisBindingStatus = ThisBindingStatus.Initialized;
@@ -69,24 +63,28 @@ namespace Jint.Runtime.Environments
 
         public override JsValue GetThisBinding()
         {
-            return _thisBindingStatus == ThisBindingStatus.Uninitialized 
-                ? ExceptionHelper.ThrowReferenceError<JsValue>(_engine)
-                : _thisValue;
+            if (_thisBindingStatus != ThisBindingStatus.Uninitialized)
+            {
+                return _thisValue;
+            }
+
+            ExceptionHelper.ThrowReferenceError(_engine.ExecutionContext.Realm, (string) null);
+            return null;
         }
 
         public JsValue GetSuperBase()
         {
             var home = _functionObject._homeObject;
-            return home.IsUndefined() 
+            return home.IsUndefined()
                 ? Undefined
-                : ((ObjectInstance) home).GetPrototypeOf();
+                : ((ObjectInstance) home).GetPrototypeOf() ?? Null;
         }
 
         // optimization to have logic near record internal structures.
 
         internal void InitializeParameters(
             Key[] parameterNames,
-            bool hasDuplicates, 
+            bool hasDuplicates,
             JsValue[] arguments)
         {
             var value = hasDuplicates ? Undefined : null;
@@ -106,20 +104,21 @@ namespace Jint.Runtime.Environments
                 }
             }
         }
-        
-        internal void AddFunctionParameters(IFunction functionDeclaration, JsValue[] arguments)
+
+        internal void AddFunctionParameters(EvaluationContext context, IFunction functionDeclaration, JsValue[] arguments)
         {
             bool empty = _dictionary.Count == 0;
             ref readonly var parameters = ref functionDeclaration.Params;
             var count = parameters.Count;
             for (var i = 0; i < count; i++)
             {
-                SetFunctionParameter(parameters[i], arguments, i, empty);
+                SetFunctionParameter(context, parameters[i], arguments, i, empty);
             }
         }
-        
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void SetFunctionParameter(
+            EvaluationContext context,
             Node parameter,
             JsValue[] arguments,
             int index,
@@ -132,11 +131,12 @@ namespace Jint.Runtime.Environments
             }
             else
             {
-                SetFunctionParameterUnlikely(parameter, arguments, index, initiallyEmpty);
+                SetFunctionParameterUnlikely(context, parameter, arguments, index, initiallyEmpty);
             }
         }
 
         private void SetFunctionParameterUnlikely(
+            EvaluationContext context,
             Node parameter,
             JsValue[] arguments,
             int index,
@@ -146,31 +146,31 @@ namespace Jint.Runtime.Environments
 
             if (parameter is RestElement restElement)
             {
-                HandleRestElementArray(restElement, arguments, index, initiallyEmpty);
+                HandleRestElementArray(context, restElement, arguments, index, initiallyEmpty);
             }
             else if (parameter is ArrayPattern arrayPattern)
             {
-                HandleArrayPattern(initiallyEmpty, argument, arrayPattern);
+                HandleArrayPattern(context, initiallyEmpty, argument, arrayPattern);
             }
             else if (parameter is ObjectPattern objectPattern)
             {
-                HandleObjectPattern(initiallyEmpty, argument, objectPattern);
+                HandleObjectPattern(context, initiallyEmpty, argument, objectPattern);
             }
             else if (parameter is AssignmentPattern assignmentPattern)
             {
-                HandleAssignmentPatternOrExpression(assignmentPattern.Left, assignmentPattern.Right, argument, initiallyEmpty);
+                HandleAssignmentPatternOrExpression(context, assignmentPattern.Left, assignmentPattern.Right, argument, initiallyEmpty);
             }
             else if (parameter is AssignmentExpression assignmentExpression)
             {
-                HandleAssignmentPatternOrExpression(assignmentExpression.Left, assignmentExpression.Right, argument, initiallyEmpty);
+                HandleAssignmentPatternOrExpression(context, assignmentExpression.Left, assignmentExpression.Right, argument, initiallyEmpty);
             }
         }
 
-        private void HandleObjectPattern(bool initiallyEmpty, JsValue argument, ObjectPattern objectPattern)
+        private void HandleObjectPattern(EvaluationContext context, bool initiallyEmpty, JsValue argument, ObjectPattern objectPattern)
         {
             if (argument.IsNullOrUndefined())
             {
-                ExceptionHelper.ThrowTypeError(_engine, "Destructed parameter is null or undefined");
+                ExceptionHelper.ThrowTypeError(_functionObject._realm, "Destructed parameter is null or undefined");
             }
 
             if (!argument.IsObject())
@@ -189,14 +189,15 @@ namespace Jint.Runtime.Environments
             foreach (var property in objectPattern.Properties)
             {
                 var oldEnv = _engine.ExecutionContext.LexicalEnvironment;
-                var paramVarEnv = LexicalEnvironment.NewDeclarativeEnvironment(_engine, oldEnv);
-                _engine.EnterExecutionContext(paramVarEnv, paramVarEnv);
+                var paramVarEnv = JintEnvironment.NewDeclarativeEnvironment(_engine, oldEnv);
+                PrivateEnvironmentRecord privateEnvironment = null; // TODO PRIVATE check when implemented
+                _engine.EnterExecutionContext(paramVarEnv, paramVarEnv, _engine.ExecutionContext.Realm, privateEnvironment);
 
                 try
                 {
                     if (property is Property p)
                     {
-                        JsString propertyName;
+                        JsString propertyName = JsString.Empty;
                         if (p.Key is Identifier propertyIdentifier)
                         {
                             propertyName = JsString.Create(propertyIdentifier.Name);
@@ -207,30 +208,30 @@ namespace Jint.Runtime.Environments
                         }
                         else if (p.Key is CallExpression callExpression)
                         {
-                            var jintCallExpression = new JintCallExpression(_engine, callExpression);
-                            var jsValue = jintCallExpression.GetValue();
+                            var jintCallExpression = new JintCallExpression(callExpression);
+                            var jsValue = jintCallExpression.GetValue(context).Value;
                             propertyName = TypeConverter.ToJsString(jsValue);
                         }
                         else
                         {
-                            propertyName = ExceptionHelper.ThrowArgumentOutOfRangeException<JsString>("property", "unknown object pattern property type");
+                            ExceptionHelper.ThrowArgumentOutOfRangeException("property", "unknown object pattern property type");
                         }
 
                         processedProperties?.Add(propertyName.ToString());
                         jsValues[0] = argumentObject.Get(propertyName);
-                        SetFunctionParameter(p.Value, jsValues, 0, initiallyEmpty);
+                        SetFunctionParameter(context, p.Value, jsValues, 0, initiallyEmpty);
                     }
                     else
                     {
                         if (((RestElement) property).Argument is Identifier restIdentifier)
                         {
-                            var rest = _engine.Object.Construct(argumentObject.Properties.Count - processedProperties.Count);
+                            var rest = _engine.Realm.Intrinsics.Object.Construct(argumentObject.Properties.Count - processedProperties.Count);
                             argumentObject.CopyDataProperties(rest, processedProperties);
                             SetItemSafely(restIdentifier.Name, rest, initiallyEmpty);
                         }
                         else
                         {
-                            ExceptionHelper.ThrowSyntaxError(_engine, "Object rest parameter can only be objects");
+                            ExceptionHelper.ThrowSyntaxError(_functionObject._realm, "Object rest parameter can only be objects");
                         }
                     }
                 }
@@ -243,11 +244,11 @@ namespace Jint.Runtime.Environments
             _engine._jsValueArrayPool.ReturnArray(jsValues);
         }
 
-        private void HandleArrayPattern(bool initiallyEmpty, JsValue argument, ArrayPattern arrayPattern)
+        private void HandleArrayPattern(EvaluationContext context, bool initiallyEmpty, JsValue argument, ArrayPattern arrayPattern)
         {
             if (argument.IsNull())
             {
-                ExceptionHelper.ThrowTypeError(_engine, "Destructed parameter is null");
+                ExceptionHelper.ThrowTypeError(_functionObject._realm, "Destructed parameter is null");
             }
 
             ArrayInstance array = null;
@@ -256,10 +257,16 @@ namespace Jint.Runtime.Environments
             {
                 array = argument.AsArray();
             }
-            else if (argument.IsObject() && argument.TryGetIterator(_engine, out var iterator))
+            else if (argument.IsObject() && argument.TryGetIterator(_functionObject._realm, out var iterator))
             {
-                array = _engine.Array.ConstructFast(0);
-                var protocol = new ArrayPatternProtocol(_engine, array, iterator, arrayPattern.Elements.Count);
+                array = _engine.Realm.Intrinsics.Array.ArrayCreate(0);
+                var max = arrayPattern.Elements.Count;
+                if (max > 0 && arrayPattern.Elements[max - 1]?.Type == Nodes.RestElement)
+                {
+                    // need to consume all
+                    max = int.MaxValue;
+                }
+                var protocol = new ArrayPatternProtocol(_engine, array, iterator, max);
                 protocol.Execute();
             }
 
@@ -273,13 +280,14 @@ namespace Jint.Runtime.Environments
                 }
             }
 
-            for (uint arrayIndex = 0; arrayIndex < arrayPattern.Elements.Count; arrayIndex++)
+            for (var i = 0; i < arrayPattern.Elements.Count; i++)
             {
-                SetFunctionParameter(arrayPattern.Elements[(int) arrayIndex], arrayContents, (int) arrayIndex, initiallyEmpty);
+                SetFunctionParameter(context, arrayPattern.Elements[i], arrayContents, i, initiallyEmpty);
             }
         }
 
         private void HandleRestElementArray(
+            EvaluationContext context,
             RestElement restElement,
             JsValue[] arguments,
             int index,
@@ -289,7 +297,7 @@ namespace Jint.Runtime.Environments
             int restCount = arguments.Length - (index + 1) + 1;
             uint count = restCount > 0 ? (uint) restCount : 0;
 
-            var rest = _engine.Array.ConstructFast(count);
+            var rest = _engine.Realm.Intrinsics.Array.ArrayCreate(count);
 
             uint targetIndex = 0;
             for (var argIndex = index; argIndex < arguments.Length; ++argIndex)
@@ -303,18 +311,19 @@ namespace Jint.Runtime.Environments
             }
             else if (restElement.Argument is BindingPattern bindingPattern)
             {
-                SetFunctionParameter(bindingPattern, new JsValue[]
+                SetFunctionParameter(context, bindingPattern, new JsValue[]
                 {
                     rest
                 }, index, initiallyEmpty);
             }
             else
             {
-                ExceptionHelper.ThrowSyntaxError(_engine, "Rest parameters can only be identifiers or arrays");
+                ExceptionHelper.ThrowSyntaxError(_functionObject._realm, "Rest parameters can only be identifiers or arrays");
             }
         }
 
         private void HandleAssignmentPatternOrExpression(
+            EvaluationContext context,
             Node left,
             Node right,
             JsValue argument,
@@ -325,7 +334,7 @@ namespace Jint.Runtime.Environments
                 && right is Identifier idRight
                 && idLeft.Name == idRight.Name)
             {
-                ExceptionHelper.ThrowReferenceError(_engine, idRight.Name);
+                ExceptionHelper.ThrowReferenceError(_functionObject._realm, idRight.Name);
             }
 
             if (argument.IsUndefined())
@@ -334,25 +343,25 @@ namespace Jint.Runtime.Environments
                 var jintExpression = JintExpression.Build(_engine, expression);
 
                 var oldEnv = _engine.ExecutionContext.LexicalEnvironment;
-                var paramVarEnv = LexicalEnvironment.NewDeclarativeEnvironment(_engine, oldEnv);
+                var paramVarEnv = JintEnvironment.NewDeclarativeEnvironment(_engine, oldEnv);
 
-                _engine.EnterExecutionContext(paramVarEnv, paramVarEnv);
+                _engine.EnterExecutionContext(new ExecutionContext(paramVarEnv, paramVarEnv, null, _engine.Realm, null));
                 try
                 {
-                    argument = jintExpression.GetValue();
+                    argument = jintExpression.GetValue(context).Value;
                 }
                 finally
                 {
                     _engine.LeaveExecutionContext();
                 }
 
-                if (idLeft != null && right.IsFunctionWithName())
+                if (idLeft != null && right.IsFunctionDefinition())
                 {
                     ((FunctionInstance) argument).SetFunctionName(idLeft.Name);
                 }
             }
 
-            SetFunctionParameter(left, new[]
+            SetFunctionParameter(context, left, new[]
             {
                 argument
             }, 0, initiallyEmpty);
@@ -370,7 +379,7 @@ namespace Jint.Runtime.Environments
                 SetItemCheckExisting(name, argument);
             }
         }
-        
+
         private void SetItemCheckExisting(Key name, JsValue argument)
         {
             if (!_dictionary.TryGetValue(name, out var existing))
@@ -385,7 +394,7 @@ namespace Jint.Runtime.Environments
                 }
                 else
                 {
-                    ExceptionHelper.ThrowTypeError(_engine, "Can't update the value of an immutable binding.");
+                    ExceptionHelper.ThrowTypeError(_functionObject._realm, "Can't update the value of an immutable binding.");
                 }
             }
         }
@@ -394,12 +403,12 @@ namespace Jint.Runtime.Environments
         {
             private readonly ArrayInstance _instance;
             private readonly int _max;
-            private long _index = -1;
+            private long _index = 0;
 
             public ArrayPatternProtocol(
                 Engine engine,
                 ArrayInstance instance,
-                IIterator iterator,
+                IteratorInstance iterator,
                 int max) : base(engine, iterator, 0)
             {
                 _instance = instance;
@@ -409,15 +418,14 @@ namespace Jint.Runtime.Environments
             protected override void ProcessItem(JsValue[] args, JsValue currentValue)
             {
                 _index++;
-                var jsValue = ExtractValueFromIteratorInstance(currentValue);
-                _instance.SetIndexValue((uint) _index, jsValue, updateLength: false);
+                _instance.SetIndexValue((uint) _index, currentValue, updateLength: false);
             }
 
             protected override bool ShouldContinue => _index < _max;
 
             protected override void IterationEnd()
             {
-                if (_index >= 0)
+                if (_index > 0)
                 {
                     _instance.SetLength((uint) _index);
                     IteratorClose(CompletionType.Normal);

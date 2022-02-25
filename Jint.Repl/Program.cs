@@ -4,6 +4,7 @@ using System.IO;
 using System.Reflection;
 using Esprima;
 using Jint.Native;
+using Jint.Native.Json;
 using Jint.Runtime;
 
 namespace Jint.Repl
@@ -19,7 +20,7 @@ namespace Jint.Repl
             engine
                 .SetValue("print", new Action<object>(Console.WriteLine))
                 .SetValue("load", new Func<string, object>(
-                    path => engine.Execute(File.ReadAllText(path)).GetCompletionValue())
+                    path => engine.Evaluate(File.ReadAllText(path)))
                 );
 
             var filename = args.Length > 0 ? args[0] : "";
@@ -31,7 +32,7 @@ namespace Jint.Repl
                 }
 
                 var script = File.ReadAllText(filename);
-                var result = engine.GetValue(engine.Execute(script).GetCompletionValue());
+                engine.Evaluate(script);
                 return;
             }
 
@@ -48,8 +49,6 @@ namespace Jint.Repl
             var defaultColor = Console.ForegroundColor;
             var parserOptions = new ParserOptions("repl")
             {
-                Loc = true,
-                Range = true,
                 Tolerant = true,
                 AdaptRegexp = true
             };
@@ -59,18 +58,23 @@ namespace Jint.Repl
                 Console.ForegroundColor = defaultColor;
                 Console.Write("jint> ");
                 var input = Console.ReadLine();
-                if (input == "exit")
+                if (input is "exit" or ".exit")
                 {
                     return;
                 }
 
                 try
                 {
-                    var result = engine.GetValue(engine.Execute(input, parserOptions).GetCompletionValue());
-                    if (result.Type != Types.None && result.Type != Types.Null && result.Type != Types.Undefined)
+                    var result = engine.Evaluate(input, parserOptions);
+                    if (!result.IsPrimitive() && result is not IPrimitiveInstance)
                     {
-                        var str = TypeConverter.ToString(engine.Json.Stringify(engine.Json, Arguments.From(result, Undefined.Instance, "  ")));
-                        Console.WriteLine("=> {0}", str);
+                        var serializer = new JsonSerializer(engine);
+                        var str = serializer.Serialize(result, Undefined.Instance, "  ");
+                        Console.WriteLine(str);
+                    }
+                    else
+                    {
+                        Console.WriteLine(result);
                     }
                 }
                 catch (JavaScriptException je)

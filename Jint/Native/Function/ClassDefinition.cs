@@ -6,11 +6,12 @@ using Jint.Native.Object;
 using Jint.Runtime;
 using Jint.Runtime.Descriptors;
 using Jint.Runtime.Environments;
+using Jint.Runtime.Interpreter;
 using Jint.Runtime.Interpreter.Expressions;
 
 namespace Jint.Native.Function
 {
-    internal class ClassDefinition
+    internal sealed class ClassDefinition
     {
         private static readonly MethodDefinition _superConstructor;
         private static readonly MethodDefinition _emptyConstructor;
@@ -47,40 +48,42 @@ namespace Jint.Native.Function
         /// https://tc39.es/ecma262/#sec-runtime-semantics-classdefinitionevaluation
         /// </summary>
         public ScriptFunctionInstance BuildConstructor(
-            Engine engine,
-            LexicalEnvironment env)
+            EvaluationContext context,
+            EnvironmentRecord env)
         {
             // A class definition is always strict mode code.
-            using var _ = (new StrictModeScope(true, true));
-            
-            var classScope = LexicalEnvironment.NewDeclarativeEnvironment(engine, env);
+            using var _ = new StrictModeScope(true, true);
+
+            var engine = context.Engine;
+
+            var classScope = JintEnvironment.NewDeclarativeEnvironment(engine, env);
 
             if (_className is not null)
             {
-                classScope._record.CreateImmutableBinding(_className, true);
+                classScope.CreateImmutableBinding(_className, true);
             }
 
             ObjectInstance? protoParent = null;
             ObjectInstance? constructorParent = null;
             if (_superClass is null)
             {
-                protoParent = engine.Object.PrototypeObject;
-                constructorParent = engine.Function.PrototypeObject;
+                protoParent = engine.Realm.Intrinsics.Object.PrototypeObject;
+                constructorParent = engine.Realm.Intrinsics.Function.PrototypeObject;
             }
             else
             {
                 engine.UpdateLexicalEnvironment(classScope);
-                var superclass = JintExpression.Build(engine, _superClass).GetValue();
+                var superclass = JintExpression.Build(engine, _superClass).GetValue(context).Value;
                 engine.UpdateLexicalEnvironment(env);
 
                 if (superclass.IsNull())
                 {
                     protoParent = null;
-                    constructorParent = engine.Function.PrototypeObject;
+                    constructorParent = engine.Realm.Intrinsics.Function.PrototypeObject;
                 }
                 else if (!superclass.IsConstructor)
                 {
-                    ExceptionHelper.ThrowTypeError(engine, "super class is not a constructor");
+                    ExceptionHelper.ThrowTypeError(engine.Realm, "super class is not a constructor");
                 }
                 else
                 {
@@ -89,13 +92,13 @@ namespace Jint.Native.Function
                     {
                         protoParent = protoParentObject;
                     }
-                    else if (temp._type == InternalTypes.Null)
+                    else if (temp.IsNull())
                     {
                         // OK
                     }
                     else
                     {
-                        ExceptionHelper.ThrowTypeError(engine);
+                        ExceptionHelper.ThrowTypeError(engine.Realm, "cannot resolve super class prototype chain");
                         return null!;
                     }
 
@@ -135,7 +138,7 @@ namespace Jint.Native.Function
                     F.SetFunctionName(_className);
                 }
 
-                F.MakeConstructor(false, proto);
+                F.MakeConstructor(writableProperty: false, proto);
                 F._constructorKind = _superClass is null ? ConstructorKind.Base : ConstructorKind.Derived;
                 F.MakeClassConstructor();
                 proto.CreateMethodProperty(CommonProperties.Constructor, F);
@@ -158,7 +161,7 @@ namespace Jint.Native.Function
 
             if (_className is not null)
             {
-                classScope._record.InitializeBinding(_className, F);
+                classScope.InitializeBinding(_className, F);
             }
 
             return F;
@@ -182,13 +185,18 @@ namespace Jint.Native.Function
             else
             {
                 var propKey = TypeConverter.ToPropertyKey(method.GetKey(engine));
-                var function = method.Value as IFunction ?? ExceptionHelper.ThrowSyntaxError<IFunction>(obj.Engine);
+                var function = method.Value as IFunction;
+                if (function is null)
+                {
+                    ExceptionHelper.ThrowSyntaxError(obj.Engine.Realm);
+                }
 
                 var closure = new ScriptFunctionInstance(
                     obj.Engine,
                     function,
                     obj.Engine.ExecutionContext.LexicalEnvironment,
                     true);
+
                 closure.SetFunctionName(propKey, method.Kind == PropertyKind.Get ? "get" : "set");
                 closure.MakeMethod(obj);
 

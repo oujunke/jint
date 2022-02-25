@@ -5,7 +5,7 @@ using Jint.Runtime;
 
 namespace Jint.Native.Date
 {
-    public class DateInstance : ObjectInstance
+    public sealed class DateInstance : ObjectInstance
     {
         // Maximum allowed value to prevent DateTime overflow
         private static readonly double Max = (DateTime.MaxValue - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds;
@@ -21,9 +21,13 @@ namespace Jint.Native.Date
 
         public DateTime ToDateTime()
         {
-            return DateTimeRangeValid 
-                ? DateConstructor.Epoch.AddMilliseconds(PrimitiveValue)
-                : ExceptionHelper.ThrowRangeError<DateTime>(Engine);
+            if (DateTimeRangeValid)
+            {
+                return DateConstructor.Epoch.AddMilliseconds(PrimitiveValue);
+            }
+
+            ExceptionHelper.ThrowRangeError(_engine.Realm);
+            return DateTime.MinValue;
         }
 
         public double PrimitiveValue { get; set; }

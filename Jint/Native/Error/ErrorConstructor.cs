@@ -1,4 +1,5 @@
-﻿using Jint.Native.Function;
+﻿using System;
+using Jint.Native.Function;
 using Jint.Native.Object;
 using Jint.Runtime;
 using Jint.Runtime.Descriptors;
@@ -7,35 +8,28 @@ namespace Jint.Native.Error
 {
     public sealed class ErrorConstructor : FunctionInstance, IConstructor
     {
-        private JsString _name;
-        private static readonly JsString _functionName = new JsString("Error");
+        private readonly Func<Intrinsics, ObjectInstance> _intrinsicDefaultProto;
 
-        public ErrorConstructor(Engine engine) : base(engine, _functionName)
+        internal ErrorConstructor(
+            Engine engine,
+            Realm realm,
+            ObjectInstance functionPrototype,
+            ObjectInstance objectPrototype,
+            JsString name, Func<Intrinsics, ObjectInstance> intrinsicDefaultProto)
+            : base(engine, realm, name)
         {
+            _intrinsicDefaultProto = intrinsicDefaultProto;
+            _prototype = functionPrototype;
+            PrototypeObject = new ErrorPrototype(engine, realm, this, objectPrototype, name, ObjectClass.Object);
+            _length = new PropertyDescriptor(JsNumber.PositiveOne, PropertyFlag.Configurable);
+            _prototypeDescriptor = new PropertyDescriptor(PrototypeObject, PropertyFlag.AllForbidden);
         }
 
-        public static ErrorConstructor CreateErrorConstructor(Engine engine, JsString name)
-        {
-            var obj = new ErrorConstructor(engine)
-            {
-                _name = name,
-                _prototype = engine.Function.PrototypeObject
-            };
-
-            // The value of the [[Prototype]] internal property of the Error constructor is the Function prototype object (15.11.3)
-            obj.PrototypeObject = ErrorPrototype.CreatePrototypeObject(engine, obj, name);
-
-            obj._length = PropertyDescriptor.AllForbiddenDescriptor.NumberOne;
-
-            // The initial value of Error.prototype is the Error prototype object
-            obj._prototypeDescriptor = new PropertyDescriptor(obj.PrototypeObject, PropertyFlag.AllForbidden);
-
-            return obj;
-        }
+        public ErrorPrototype PrototypeObject { get; }
 
         public override JsValue Call(JsValue thisObject, JsValue[] arguments)
         {
-            return Construct(arguments, thisObject);
+            return Construct(arguments, this);
         }
 
         public ObjectInstance Construct(JsValue[] arguments)
@@ -43,13 +37,17 @@ namespace Jint.Native.Error
             return Construct(arguments, this);
         }
 
-        public ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+        ObjectInstance IConstructor.Construct(JsValue[] arguments, JsValue newTarget) => Construct(arguments, newTarget);
+
+        /// <summary>
+        /// https://tc39.es/ecma262/#sec-nativeerror
+        /// </summary>
+        private ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
         {
             var o = OrdinaryCreateFromConstructor(
                 newTarget,
-                PrototypeObject, 
-                static (e, state) => new ErrorInstance(e, (JsString) state),
-                _name);
+                _intrinsicDefaultProto,
+                static (engine, realm, state) => new ErrorInstance(engine));
 
             var jsValue = arguments.At(0);
             if (!jsValue.IsUndefined())
@@ -59,14 +57,21 @@ namespace Jint.Native.Error
                 o.DefinePropertyOrThrow("message", msgDesc);
             }
 
+            var lastSyntaxNode = _engine.GetLastSyntaxNode();
+            var stackString = lastSyntaxNode == null ? Undefined : _engine.CallStack.BuildCallStackString(lastSyntaxNode.Location);
+            var stackDesc = new PropertyDescriptor(stackString, PropertyFlag.NonEnumerable);
+            o.DefinePropertyOrThrow(CommonProperties.Stack, stackDesc);
+
+            var options = arguments.At(1);
+
+            if (options is ObjectInstance oi && oi.HasProperty("cause"))
+            {
+                var cause = oi.Get("cause");
+                var causeDesc = new PropertyDescriptor(cause, PropertyFlag.NonEnumerable);
+                o.DefinePropertyOrThrow("cause", causeDesc);
+            }
+
             return o;
-        }
-
-        public ErrorPrototype PrototypeObject { get; private set; }
-
-        protected internal override ObjectInstance GetPrototypeOf()
-        {
-            return _name._value != "Error" ? _engine.Error : _prototype;
         }
     }
 }

@@ -12,7 +12,7 @@ namespace Jint.Tests.Runtime.Domain
     {
         private static readonly JsString _functionName = new JsString("Uuid");
 
-        private UuidConstructor(Engine engine) : base(engine, _functionName)
+        private UuidConstructor(Engine engine) : base(engine, engine.Realm, _functionName)
         {
         }
 
@@ -32,7 +32,7 @@ namespace Jint.Tests.Runtime.Domain
 
         protected internal override ObjectInstance GetPrototypeOf() => _prototype;
 
-        internal ObjectInstance _prototype;
+        internal new ObjectInstance _prototype;
 
         public UuidPrototype PrototypeObject { get; private set; }
 
@@ -41,7 +41,7 @@ namespace Jint.Tests.Runtime.Domain
             var obj = new UuidConstructor(engine)
             {
                 // The value of the [[Prototype]] internal property of the Uuid constructor is the Function prototype object
-                _prototype = engine.Function.PrototypeObject
+                _prototype = engine.Realm.Intrinsics.Function.PrototypeObject
             };
             obj.PrototypeObject = UuidPrototype.CreatePrototypeObject(engine, obj);
 

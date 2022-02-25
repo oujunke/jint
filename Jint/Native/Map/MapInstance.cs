@@ -5,21 +5,22 @@ using Jint.Runtime.Descriptors;
 
 namespace Jint.Native.Map
 {
-    public class MapInstance : ObjectInstance
+    public sealed class MapInstance : ObjectInstance
     {
+        private readonly Realm _realm;
         internal readonly OrderedDictionary<JsValue, JsValue> _map;
 
-        public MapInstance(Engine engine)
-            : base(engine, objectClass: ObjectClass.Map)
+        public MapInstance(Engine engine, Realm realm) : base(engine)
         {
-            _map = new OrderedDictionary<JsValue, JsValue>();
+            _realm = realm;
+            _map = new OrderedDictionary<JsValue, JsValue>(SameValueZeroComparer.Instance);
         }
 
         public override PropertyDescriptor GetOwnProperty(JsValue property)
         {
             if (property == CommonProperties.Size)
             {
-                return new PropertyDescriptor(_map.Count, PropertyFlag.None);
+                return new PropertyDescriptor(_map.Count, PropertyFlag.AllForbidden);
             }
 
             return base.GetOwnProperty(property);
@@ -29,7 +30,7 @@ namespace Jint.Native.Map
         {
             if (property == CommonProperties.Size)
             {
-                descriptor = new PropertyDescriptor(_map.Count, PropertyFlag.None);
+                descriptor = new PropertyDescriptor(_map.Count, PropertyFlag.AllForbidden);
                 return true;
             }
 
@@ -83,17 +84,17 @@ namespace Jint.Native.Map
 
         internal ObjectInstance Iterator()
         {
-            return _engine.Iterator.Construct(this);
+            return _realm.Intrinsics.MapIteratorPrototype.ConstructEntryIterator(this);
         }
 
         internal ObjectInstance Keys()
         {
-            return _engine.Iterator.Construct(_map.Keys);
+            return _realm.Intrinsics.MapIteratorPrototype.ConstructKeyIterator(this);
         }
 
         internal ObjectInstance Values()
         {
-            return _engine.Iterator.Construct(_map.Values);
+            return _realm.Intrinsics.MapIteratorPrototype.ConstructValueIterator(this);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

@@ -11,7 +11,7 @@ namespace Jint.Native.Function
 {
     public sealed class ScriptFunctionInstance : FunctionInstance, IConstructor
     {
-        private bool _isClassConstructor;
+        internal bool _isClassConstructor;
 
         /// <summary>
         /// http://www.ecma-international.org/ecma-262/5.1/#sec-13.2
@@ -19,27 +19,32 @@ namespace Jint.Native.Function
         public ScriptFunctionInstance(
             Engine engine,
             IFunction functionDeclaration,
-            LexicalEnvironment scope,
+            EnvironmentRecord scope,
             bool strict,
             ObjectInstance proto = null)
-            : this(engine, new JintFunctionDefinition(engine, functionDeclaration), scope, strict ? FunctionThisMode.Strict : FunctionThisMode.Global, proto)
+            : this(
+                engine,
+                new JintFunctionDefinition(engine, functionDeclaration),
+                scope,
+                strict ? FunctionThisMode.Strict : FunctionThisMode.Global,
+                proto)
         {
         }
 
         internal ScriptFunctionInstance(
             Engine engine,
             JintFunctionDefinition function,
-            LexicalEnvironment scope,
+            EnvironmentRecord scope,
             FunctionThisMode thisMode,
             ObjectInstance proto = null)
-            : base(engine, function, scope, thisMode)
+            : base(engine, engine.Realm, function, scope, thisMode)
         {
-            _prototype = proto ?? _engine.Function.PrototypeObject;
-            _length = new LazyPropertyDescriptor(() => JsNumber.Create(function.Initialize(engine, this).Length), PropertyFlag.Configurable);
+            _prototype = proto ?? _engine.Realm.Intrinsics.Function.PrototypeObject;
+            _length = new LazyPropertyDescriptor(null, _ => JsNumber.Create(function.Initialize(this).Length), PropertyFlag.Configurable);
 
             if (!function.Strict && !engine._isStrict && function.Function is not ArrowFunctionExpression)
             {
-                DefineOwnProperty(CommonProperties.Arguments, engine._callerCalleeArgumentsThrowerConfigurable);
+                DefineOwnProperty(CommonProperties.Arguments, new GetSetPropertyDescriptor.ThrowerPropertyDescriptor(engine, PropertyFlag.Configurable | PropertyFlag.CustomJsValue));
                 DefineOwnProperty(CommonProperties.Caller, new PropertyDescriptor(Undefined, PropertyFlag.Configurable));
             }
         }
@@ -49,27 +54,38 @@ namespace Jint.Native.Function
         /// </summary>
         public override JsValue Call(JsValue thisArgument, JsValue[] arguments)
         {
-            if (_isClassConstructor)
-            {
-                ExceptionHelper.ThrowTypeError(_engine, $"Class constructor {_functionDefinition.Name} cannot be invoked without 'new'");
-            }
-
-            var calleeContext = PrepareForOrdinaryCall(Undefined);
-
-            OrdinaryCallBindThis(calleeContext, thisArgument);
-
-            // actual call
-
             var strict = _thisMode == FunctionThisMode.Strict || _engine._isStrict;
             using (new StrictModeScope(strict, true))
             {
                 try
                 {
-                    var result = OrdinaryCallEvaluateBody(arguments, calleeContext);
+                    var calleeContext = PrepareForOrdinaryCall(Undefined);
+
+                    if (_isClassConstructor)
+                    {
+                        ExceptionHelper.ThrowTypeError(calleeContext.Realm, $"Class constructor {_functionDefinition.Name} cannot be invoked without 'new'");
+                    }
+
+                    OrdinaryCallBindThis(calleeContext, thisArgument);
+
+                    // actual call
+                    var context = _engine._activeEvaluationContext ?? new EvaluationContext(_engine);
+                    var result = OrdinaryCallEvaluateBody(context, arguments, calleeContext);
 
                     if (result.Type == CompletionType.Throw)
                     {
                         ExceptionHelper.ThrowJavaScriptException(_engine, result.Value, result);
+                    }
+
+                    // The DebugHandler needs the current execution context before the return for stepping through the return point
+                    if (_engine._isDebugMode)
+                    {
+                        // We don't have a statement, but we still need a Location for debuggers. DebugHandler will infer one from
+                        // the function body:
+                        _engine.DebugHandler.OnReturnPoint(
+                            _functionDefinition.Function.Body,
+                            result.Type == CompletionType.Normal ? Undefined : result.Value
+                        );
                     }
 
                     if (result.Type == CompletionType.Return)
@@ -86,22 +102,26 @@ namespace Jint.Native.Function
             }
         }
 
-        public override bool IsConstructor =>
-            (_homeObject.IsUndefined() || _isClassConstructor) 
+        internal override bool IsConstructor =>
+            (_homeObject.IsUndefined() || _isClassConstructor)
             && _functionDefinition?.Function is not ArrowFunctionExpression;
 
         /// <summary>
         /// https://tc39.es/ecma262/#sec-ecmascript-function-objects-construct-argumentslist-newtarget
         /// </summary>
-        public ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+        ObjectInstance IConstructor.Construct(JsValue[] arguments, JsValue newTarget)
         {
+            var callerContext = _engine.ExecutionContext;
             var kind = _constructorKind;
 
             var thisArgument = Undefined;
-            
+
             if (kind == ConstructorKind.Base)
             {
-                thisArgument = OrdinaryCreateFromConstructor(newTarget, _engine.Object.PrototypeObject, static (engine, _) => new ObjectInstance(engine));
+                thisArgument = OrdinaryCreateFromConstructor(
+                    newTarget,
+                    static intrinsics => intrinsics.Object.PrototypeObject,
+                    static (engine, realm, _) => new ObjectInstance(engine));
             }
 
             var calleeContext = PrepareForOrdinaryCall(newTarget);
@@ -111,14 +131,26 @@ namespace Jint.Native.Function
                 OrdinaryCallBindThis(calleeContext, thisArgument);
             }
 
-            var constructorEnv = (FunctionEnvironmentRecord) calleeContext.LexicalEnvironment._record;
-            
+            var constructorEnv = (FunctionEnvironmentRecord) calleeContext.LexicalEnvironment;
+
             var strict = _thisMode == FunctionThisMode.Strict || _engine._isStrict;
             using (new StrictModeScope(strict, force: true))
             {
                 try
                 {
-                    var result = OrdinaryCallEvaluateBody(arguments, calleeContext);
+                    var context = _engine._activeEvaluationContext ?? new EvaluationContext(_engine);
+                    var result = OrdinaryCallEvaluateBody(context, arguments, calleeContext);
+
+                    // The DebugHandler needs the current execution context before the return for stepping through the return point
+                    if (_engine._isDebugMode && result.Type != CompletionType.Throw)
+                    {
+                        // We don't have a statement, but we still need a Location for debuggers. DebugHandler will infer one from
+                        // the function body:
+                        _engine.DebugHandler.OnReturnPoint(
+                            _functionDefinition.Function.Body,
+                            result.Type == CompletionType.Normal ? thisArgument : result.Value
+                        );
+                    }
 
                     if (result.Type == CompletionType.Return)
                     {
@@ -134,7 +166,7 @@ namespace Jint.Native.Function
 
                         if (!result.Value.IsUndefined())
                         {
-                            ExceptionHelper.ThrowTypeError(_engine);
+                            ExceptionHelper.ThrowTypeError(callerContext.Realm);
                         }
                     }
                     else if (result.Type == CompletionType.Throw)
@@ -150,7 +182,7 @@ namespace Jint.Native.Function
 
             return (ObjectInstance) constructorEnv.GetThisBinding();
         }
-        
+
         internal void MakeConstructor(bool writableProperty = true, ObjectInstance prototype = null)
         {
             _constructorKind = ConstructorKind.Base;
@@ -158,18 +190,18 @@ namespace Jint.Native.Function
             {
                 prototype = new ObjectInstanceWithConstructor(_engine, this)
                 {
-                    _prototype = _engine.Object.PrototypeObject
+                    _prototype = _realm.Intrinsics.Object.PrototypeObject
                 };
             }
 
             _prototypeDescriptor = new PropertyDescriptor(prototype, writableProperty, enumerable: false, configurable: false);
-        }        
+        }
 
         internal void MakeClassConstructor()
         {
             _isClassConstructor = true;
         }
-        
+
         private class ObjectInstanceWithConstructor : ObjectInstance
         {
             private PropertyDescriptor _constructor;

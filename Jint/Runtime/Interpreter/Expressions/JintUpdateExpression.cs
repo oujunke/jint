@@ -14,23 +14,23 @@ namespace Jint.Runtime.Interpreter.Expressions
         private JintIdentifierExpression _leftIdentifier;
         private bool _evalOrArguments;
 
-        public JintUpdateExpression(Engine engine, UpdateExpression expression) : base(engine, expression)
+        public JintUpdateExpression(UpdateExpression expression) : base(expression)
         {
             _initialized = false;
         }
 
-        protected override void Initialize()
+        protected override void Initialize(EvaluationContext context)
         {
             var expression = (UpdateExpression) _expression;
             _prefix = expression.Prefix;
-            _argument = Build(_engine, expression.Argument);
+            _argument = Build(context.Engine, expression.Argument);
             if (expression.Operator == UnaryOperator.Increment)
             {
                 _change = 1;
             }
             else if (expression.Operator == UnaryOperator.Decrement)
             {
-                _change = - 1;
+                _change = -1;
             }
             else
             {
@@ -41,44 +41,88 @@ namespace Jint.Runtime.Interpreter.Expressions
             _evalOrArguments = _leftIdentifier?.HasEvalOrArguments == true;
         }
 
-        protected override object EvaluateInternal()
+        protected override ExpressionResult EvaluateInternal(EvaluationContext context)
         {
             var fastResult = _leftIdentifier != null
-                ? UpdateIdentifier()
+                ? UpdateIdentifier(context)
                 : null;
 
-            return fastResult ?? UpdateNonIdentifier();
+            return NormalCompletion(fastResult ?? UpdateNonIdentifier(context));
         }
 
-        private object UpdateNonIdentifier()
+        private JsValue UpdateNonIdentifier(EvaluationContext context)
         {
-            if (!(_argument.Evaluate() is Reference reference))
+            var engine = context.Engine;
+            var reference = _argument.Evaluate(context).Value as Reference;
+            if (reference is null)
             {
-                return ExceptionHelper.ThrowTypeError<object>(_engine, "Invalid left-hand side expression");
+                ExceptionHelper.ThrowTypeError(engine.Realm, "Invalid left-hand side expression");
             }
 
-            reference.AssertValid(_engine);
+            reference.AssertValid(engine.Realm);
 
-            var value = _engine.GetValue(reference, false);
+            var value = engine.GetValue(reference, false);
             var isInteger = value._type == InternalTypes.Integer;
-            var newValue = isInteger
-                ? JsNumber.Create(value.AsInteger() + _change)
-                : JsNumber.Create(TypeConverter.ToNumber(value) + _change);
 
-            _engine.PutValue(reference, newValue);
-            _engine._referencePool.Return(reference);
+            JsValue newValue = null;
 
-            return _prefix
-                ? newValue
-                : (isInteger ? value : JsNumber.Create(TypeConverter.ToNumber(value)));
+            var operatorOverloaded = false;
+            if (context.OperatorOverloadingAllowed)
+            {
+                if (JintUnaryExpression.TryOperatorOverloading(context, _argument.GetValue(context).Value, _change > 0 ? "op_Increment" : "op_Decrement", out var result))
+                {
+                    operatorOverloaded = true;
+                    newValue = result;
+                }
+            }
+
+            if (!operatorOverloaded)
+            {
+                if (isInteger)
+                {
+                    newValue = JsNumber.Create(value.AsInteger() + _change);
+                }
+                else if (!value.IsBigInt())
+                {
+                    newValue = JsNumber.Create(TypeConverter.ToNumber(value) + _change);
+                }
+                else
+                {
+                    newValue = JsBigInt.Create(TypeConverter.ToBigInt(value) + _change);
+                }
+            }
+
+            engine.PutValue(reference, newValue);
+            engine._referencePool.Return(reference);
+
+            if (_prefix)
+            {
+                return newValue;
+            }
+            else
+            {
+                if (isInteger || operatorOverloaded)
+                {
+                    return value;
+                }
+
+                if (!value.IsBigInt())
+                {
+                    return JsNumber.Create(TypeConverter.ToNumber(value));
+                }
+
+                return JsBigInt.Create(value);
+            }
         }
 
-        private JsValue UpdateIdentifier()
+        private JsValue UpdateIdentifier(EvaluationContext context)
         {
             var strict = StrictModeScope.IsStrictModeCode;
             var name = _leftIdentifier._expressionName;
-            var env = _engine.ExecutionContext.LexicalEnvironment;
-            if (LexicalEnvironment.TryGetIdentifierEnvironmentWithBindingValue(
+            var engine = context.Engine;
+            var env = engine.ExecutionContext.LexicalEnvironment;
+            if (JintEnvironment.TryGetIdentifierEnvironmentWithBindingValue(
+                engine,
                 env,
                 name,
                 strict,
@@ -87,18 +131,51 @@ namespace Jint.Runtime.Interpreter.Expressions
             {
                 if (strict && _evalOrArguments)
                 {
-                    ExceptionHelper.ThrowSyntaxError(_engine);
+                    ExceptionHelper.ThrowSyntaxError(engine.Realm);
                 }
 
                 var isInteger = value._type == InternalTypes.Integer;
-                var newValue = isInteger
-                    ? JsNumber.Create(value.AsInteger() + _change)
-                    : JsNumber.Create(TypeConverter.ToNumber(value) + _change);
+
+                JsValue newValue = null;
+
+                var operatorOverloaded = false;
+                if (context.OperatorOverloadingAllowed)
+                {
+                    if (JintUnaryExpression.TryOperatorOverloading(context, _argument.GetValue(context).Value, _change > 0 ? "op_Increment" : "op_Decrement", out var result))
+                    {
+                        operatorOverloaded = true;
+                        newValue = result;
+                    }
+                }
+
+                if (!operatorOverloaded)
+                {
+                    if (isInteger)
+                    {
+                        newValue = JsNumber.Create(value.AsInteger() + _change);
+                    }
+                    else if (value._type != InternalTypes.BigInt)
+                    {
+                        newValue = JsNumber.Create(TypeConverter.ToNumber(value) + _change);
+                    }
+                    else
+                    {
+                        newValue = JsBigInt.Create(TypeConverter.ToBigInt(value) + _change);
+                    }
+                }
 
                 environmentRecord.SetMutableBinding(name.Key.Name, newValue, strict);
-                return _prefix
-                    ? newValue
-                    : (isInteger ? value : JsNumber.Create(TypeConverter.ToNumber(value)));
+                if (_prefix)
+                {
+                    return newValue;
+                }
+
+                if (!value.IsBigInt() && !value.IsNumber() && !operatorOverloaded)
+                {
+                    return JsNumber.Create(TypeConverter.ToNumber(value));
+                }
+
+                return value;
             }
 
             return null;

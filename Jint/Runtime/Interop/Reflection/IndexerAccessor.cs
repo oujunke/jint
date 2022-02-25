@@ -4,6 +4,8 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Reflection;
 using Jint.Native;
+using Jint.Runtime.Descriptors;
+using Jint.Runtime.Descriptors.Specialized;
 
 namespace Jint.Runtime.Interop.Reflection
 {
@@ -40,7 +42,21 @@ namespace Jint.Runtime.Interop.Reflection
 
             IndexerAccessor ComposeIndexerFactory(PropertyInfo candidate, Type paramType)
             {
-                if (engine.ClrTypeConverter.TryConvert(propertyName, paramType, CultureInfo.InvariantCulture, out var key))
+                object key = null;
+                // int key is quite common case
+                if (paramType == typeof(int))
+                {
+                    if (int.TryParse(propertyName, out var intValue))
+                    {
+                        key = intValue;
+                    }
+                }
+                else
+                {
+                    engine.ClrTypeConverter.TryConvert(propertyName, paramType, CultureInfo.InvariantCulture, out key);
+                }
+
+                if (key is not null)
                 {
                     // the key can be converted for this indexer
                     var indexerProperty = candidate;
@@ -60,8 +76,10 @@ namespace Jint.Runtime.Interop.Reflection
                 return null;
             }
 
+            var filter = new Func<MemberInfo, bool>(m => engine.Options.Interop.TypeResolver.Filter(engine, m));
+
             // default indexer wins
-            if (typeof(IList).IsAssignableFrom(targetType))
+            if (typeof(IList).IsAssignableFrom(targetType) && filter(_iListIndexer))
             {
                 indexerAccessor = ComposeIndexerFactory(_iListIndexer, typeof(int));
                 if (indexerAccessor != null)
@@ -74,6 +92,11 @@ namespace Jint.Runtime.Interop.Reflection
             // try to find first indexer having either public getter or setter with matching argument type
             foreach (var candidate in targetType.GetProperties())
             {
+                if (!filter(candidate))
+                {
+                    continue;
+                }
+
                 var indexParameters = candidate.GetIndexParameters();
                 if (indexParameters.Length != 1)
                 {
@@ -129,6 +152,11 @@ namespace Jint.Runtime.Interop.Reflection
 
             object[] parameters = {_key, value};
             _setter!.Invoke(target, parameters);
+        }
+
+        public override PropertyDescriptor CreatePropertyDescriptor(Engine engine, object target)
+        {
+            return new ReflectionDescriptor(engine, this, target, false);
         }
     }
 }

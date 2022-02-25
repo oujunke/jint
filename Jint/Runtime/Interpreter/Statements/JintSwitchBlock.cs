@@ -9,36 +9,36 @@ namespace Jint.Runtime.Interpreter.Statements
 {
     internal sealed class JintSwitchBlock
     {
-        private readonly Engine _engine;
         private readonly NodeList<SwitchCase> _switchBlock;
         private JintSwitchCase[] _jintSwitchBlock;
         private bool _initialized;
 
-        public JintSwitchBlock(Engine engine, NodeList<SwitchCase> switchBlock)
+        public JintSwitchBlock(NodeList<SwitchCase> switchBlock)
         {
-            _engine = engine;
             _switchBlock = switchBlock;
         }
 
-        private void Initialize()
+        private void Initialize(EvaluationContext context)
         {
+            var engine = context.Engine;
             _jintSwitchBlock = new JintSwitchCase[_switchBlock.Count];
             for (var i = 0; i < _jintSwitchBlock.Length; i++)
             {
-                _jintSwitchBlock[i] = new JintSwitchCase(_engine, _switchBlock[i]);
+                _jintSwitchBlock[i] = new JintSwitchCase(engine, _switchBlock[i]);
             }
         }
 
-        public Completion Execute(JsValue input)
+        public Completion Execute(EvaluationContext context, JsValue input)
         {
             if (!_initialized)
             {
-                Initialize();
+                Initialize(context);
                 _initialized = true;
             }
 
+            var engine = context.Engine;
             JsValue v = Undefined.Instance;
-            Location l = _engine._lastSyntaxNode.Location;
+            Location l = context.LastSyntaxNode.Location;
             JintSwitchCase defaultCase = null;
             bool hit = false;
 
@@ -46,13 +46,13 @@ namespace Jint.Runtime.Interpreter.Statements
             {
                 var clause = _jintSwitchBlock[i];
 
-                LexicalEnvironment oldEnv = null;
+                EnvironmentRecord oldEnv = null;
                 if (clause.LexicalDeclarations != null)
                 {
-                    oldEnv = _engine.ExecutionContext.LexicalEnvironment;
-                    var blockEnv = LexicalEnvironment.NewDeclarativeEnvironment(_engine, oldEnv);
-                    JintStatementList.BlockDeclarationInstantiation(blockEnv, clause.LexicalDeclarations);
-                    _engine.UpdateLexicalEnvironment(blockEnv);
+                    oldEnv = engine.ExecutionContext.LexicalEnvironment;
+                    var blockEnv = JintEnvironment.NewDeclarativeEnvironment(engine, oldEnv);
+                    JintStatementList.BlockDeclarationInstantiation(engine, blockEnv, clause.LexicalDeclarations);
+                    engine.UpdateLexicalEnvironment(blockEnv);
                 }
 
                 if (clause.Test == null)
@@ -61,8 +61,8 @@ namespace Jint.Runtime.Interpreter.Statements
                 }
                 else
                 {
-                    var clauseSelector = clause.Test.GetValue();
-                    if (JintBinaryExpression.StrictlyEqual(clauseSelector, input))
+                    var clauseSelector = clause.Test.GetValue(context).Value;
+                    if (clauseSelector == input)
                     {
                         hit = true;
                     }
@@ -70,11 +70,11 @@ namespace Jint.Runtime.Interpreter.Statements
 
                 if (hit && clause.Consequent != null)
                 {
-                    var r = clause.Consequent.Execute();
+                    var r = clause.Consequent.Execute(context);
 
-                    if (oldEnv != null)
+                    if (oldEnv is not null)
                     {
-                        _engine.UpdateLexicalEnvironment(oldEnv);
+                        engine.UpdateLexicalEnvironment(oldEnv);
                     }
 
                     if (r.Type != CompletionType.Normal)
@@ -90,20 +90,20 @@ namespace Jint.Runtime.Interpreter.Statements
             // do we need to execute the default case ?
             if (hit == false && defaultCase != null)
             {
-                LexicalEnvironment oldEnv = null;
+                EnvironmentRecord oldEnv = null;
                 if (defaultCase.LexicalDeclarations != null)
                 {
-                    oldEnv = _engine.ExecutionContext.LexicalEnvironment;
-                    var blockEnv = LexicalEnvironment.NewDeclarativeEnvironment(_engine, oldEnv);
-                    JintStatementList.BlockDeclarationInstantiation(blockEnv, defaultCase.LexicalDeclarations);
-                    _engine.UpdateLexicalEnvironment(blockEnv);
+                    oldEnv = engine.ExecutionContext.LexicalEnvironment;
+                    var blockEnv = JintEnvironment.NewDeclarativeEnvironment(engine, oldEnv);
+                    JintStatementList.BlockDeclarationInstantiation(engine, blockEnv, defaultCase.LexicalDeclarations);
+                    engine.UpdateLexicalEnvironment(blockEnv);
                 }
 
-                var r = defaultCase.Consequent.Execute();
+                var r = defaultCase.Consequent.Execute(context);
 
-                if (oldEnv != null)
+                if (oldEnv is not null)
                 {
-                    _engine.UpdateLexicalEnvironment(oldEnv);
+                    engine.UpdateLexicalEnvironment(oldEnv);
                 }
                 if (r.Type != CompletionType.Normal)
                 {
@@ -121,11 +121,11 @@ namespace Jint.Runtime.Interpreter.Statements
         {
             internal readonly JintStatementList Consequent;
             internal readonly JintExpression Test;
-            internal readonly List<VariableDeclaration> LexicalDeclarations;
+            internal readonly List<Declaration> LexicalDeclarations;
 
             public JintSwitchCase(Engine engine, SwitchCase switchCase)
             {
-                Consequent = new JintStatementList(engine, null, switchCase.Consequent);
+                Consequent = new JintStatementList(null, switchCase.Consequent);
                 LexicalDeclarations = HoistingScope.GetLexicalDeclarations(switchCase);
 
                 if (switchCase.Test != null)

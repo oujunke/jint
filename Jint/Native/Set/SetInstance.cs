@@ -4,21 +4,20 @@ using Jint.Runtime.Descriptors;
 
 namespace Jint.Native.Set
 {
-    public class SetInstance : ObjectInstance
+    public sealed class SetInstance : ObjectInstance
     {
         internal readonly OrderedSet<JsValue> _set;
 
-        public SetInstance(Engine engine)
-            : base(engine, ObjectClass.Map)
+        public SetInstance(Engine engine) : base(engine)
         {
-            _set = new OrderedSet<JsValue>();
+            _set = new OrderedSet<JsValue>(SameValueZeroComparer.Instance);
         }
 
         public override PropertyDescriptor GetOwnProperty(JsValue property)
         {
             if (property == CommonProperties.Size)
             {
-                return new PropertyDescriptor(_set.Count, PropertyFlag.None);
+                return new PropertyDescriptor(_set.Count, PropertyFlag.AllForbidden);
             }
 
             return base.GetOwnProperty(property);
@@ -28,7 +27,7 @@ namespace Jint.Native.Set
         {
             if (property == CommonProperties.Size)
             {
-                descriptor = new PropertyDescriptor(_set.Count, PropertyFlag.None);
+                descriptor = new PropertyDescriptor(_set.Count, PropertyFlag.AllForbidden);
                 return true;
             }
 
@@ -73,12 +72,12 @@ namespace Jint.Native.Set
 
         internal ObjectInstance Entries()
         {
-            return _engine.Iterator.ConstructEntryIterator(this);
+            return _engine.Realm.Intrinsics.SetIteratorPrototype.ConstructEntryIterator(this);
         }
 
         internal ObjectInstance Values()
         {
-            return _engine.Iterator.Construct(_set._list);
+            return _engine.Realm.Intrinsics.SetIteratorPrototype.ConstructValueIterator(this);
         }
     }
 }

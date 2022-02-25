@@ -1,4 +1,5 @@
 ﻿using Jint.Collections;
+using Jint.Native.Proxy;
 using Jint.Native.Symbol;
 using Jint.Runtime;
 using Jint.Runtime.Descriptors;
@@ -6,22 +7,16 @@ using Jint.Runtime.Interop;
 
 namespace Jint.Native.Object
 {
-    public sealed class ObjectPrototype : ObjectInstance
+    public sealed class ObjectPrototype : Prototype
     {
-        private ObjectConstructor _objectConstructor;
+        private readonly ObjectConstructor _constructor;
 
-        private ObjectPrototype(Engine engine) : base(engine)
+        internal ObjectPrototype(
+            Engine engine,
+            Realm realm,
+            ObjectConstructor constructor) : base(engine, realm)
         {
-        }
-
-        public static ObjectPrototype CreatePrototypeObject(Engine engine, ObjectConstructor objectConstructor)
-        {
-            var obj = new ObjectPrototype(engine)
-            {
-                _objectConstructor = objectConstructor
-            };
-
-            return obj;
+            _constructor = constructor;
         }
 
         protected override void Initialize()
@@ -30,7 +25,7 @@ namespace Jint.Native.Object
             const PropertyFlag lengthFlags = PropertyFlag.Configurable;
             var properties = new PropertyDictionary(8, checkExistingKeys: false)
             {
-                ["constructor"] = new PropertyDescriptor(_objectConstructor, propertyFlags),
+                ["constructor"] = new PropertyDescriptor(_constructor, propertyFlags),
                 ["toString"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "toString", ToObjectString, 0, lengthFlags), propertyFlags),
                 ["toLocaleString"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "toLocaleString", ToLocaleString, 0, lengthFlags), propertyFlags),
                 ["valueOf"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "valueOf", ValueOf, 0, lengthFlags), propertyFlags),
@@ -44,18 +39,18 @@ namespace Jint.Native.Object
         private JsValue PropertyIsEnumerable(JsValue thisObject, JsValue[] arguments)
         {
             var p = TypeConverter.ToPropertyKey(arguments[0]);
-            var o = TypeConverter.ToObject(Engine, thisObject);
+            var o = TypeConverter.ToObject(_realm, thisObject);
             var desc = o.GetOwnProperty(p);
             if (desc == PropertyDescriptor.Undefined)
             {
-                return false;
+                return JsBoolean.False;
             }
             return desc.Enumerable;
         }
 
         private JsValue ValueOf(JsValue thisObject, JsValue[] arguments)
         {
-            var o = TypeConverter.ToObject(Engine, thisObject);
+            var o = TypeConverter.ToObject(_realm, thisObject);
             return o;
         }
 
@@ -64,35 +59,38 @@ namespace Jint.Native.Object
             var arg = arguments[0];
             if (!arg.IsObject())
             {
-                return false;
+                return JsBoolean.False;
             }
 
             var v = arg.AsObject();
 
-            var o = TypeConverter.ToObject(Engine, thisObject);
+            var o = TypeConverter.ToObject(_realm, thisObject);
             while (true)
             {
                 v = v.Prototype;
 
                 if (ReferenceEquals(v, null))
                 {
-                    return false;
+                    return JsBoolean.False;
                 }
 
                 if (ReferenceEquals(o, v))
                 {
-                    return true;
+                    return JsBoolean.True;
                 }
-
             }
         }
 
         private JsValue ToLocaleString(JsValue thisObject, JsValue[] arguments)
         {
-            var o = TypeConverter.ToObject(Engine, thisObject);
+            var o = TypeConverter.ToObject(_realm, thisObject);
             var func = o.Get("toString");
-            var callable = func as ICallable ?? ExceptionHelper.ThrowTypeErrorNoEngine<ICallable>("Can only invoke functions");
-            return TypeConverter.ToString(callable.Call(thisObject, arguments));
+            var callable = func as ICallable;
+            if (callable is null)
+            {
+                ExceptionHelper.ThrowTypeError(_realm, "Can only invoke functions");
+            }
+            return TypeConverter.ToJsString(callable.Call(thisObject, arguments));
         }
 
         /// <summary>
@@ -110,12 +108,24 @@ namespace Jint.Native.Object
                 return "[object Null]";
             }
 
-            var o = TypeConverter.ToObject(Engine, thisObject);
+            var o = TypeConverter.ToObject(_realm, thisObject);
+            var isArray = o.IsArray();
 
             var tag = o.Get(GlobalSymbolRegistry.ToStringTag);
             if (!tag.IsString())
             {
-                tag = o.Class.ToString();
+                if (isArray)
+                {
+                    tag = "Array";
+                }
+                else if (o.IsCallable)
+                {
+                    tag = "Function";
+                }
+                else
+                {
+                    tag = (o is ProxyInstance ? ObjectClass.Object : o.Class).ToString();
+                }
             }
 
             return "[object " + tag + "]";
@@ -127,7 +137,7 @@ namespace Jint.Native.Object
         public JsValue HasOwnProperty(JsValue thisObject, JsValue[] arguments)
         {
             var p = TypeConverter.ToPropertyKey(arguments[0]);
-            var o = TypeConverter.ToObject(Engine, thisObject);
+            var o = TypeConverter.ToObject(_realm, thisObject);
             var desc = o.GetOwnProperty(p);
             return desc != PropertyDescriptor.Undefined;
         }

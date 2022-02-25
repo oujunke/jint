@@ -1,67 +1,100 @@
+using System.Collections.Generic;
 using Esprima.Ast;
+using Jint.Native;
 using Jint.Runtime.Environments;
-using System.Threading;
 
 namespace Jint.Runtime.Interpreter.Statements
 {
     /// <summary>
-    /// http://www.ecma-international.org/ecma-262/5.1/#sec-12.14
+    /// https://tc39.es/ecma262/#sec-try-statement
     /// </summary>
     internal sealed class JintTryStatement : JintStatement<TryStatement>
     {
-        private readonly JintStatement _block;
-        private readonly JintStatement _catch;
-        private readonly Key _catchParamName;
-        private readonly JintStatement _finalizer;
+        private JintStatement _block;
+        private JintStatement _catch;
+        private JintStatement _finalizer;
 
-        public JintTryStatement(Engine engine, TryStatement statement) : base(engine, statement)
+        public JintTryStatement(TryStatement statement) : base(statement)
         {
-            _block = Build(engine, statement.Block);
-            if (_statement.Handler != null)
-            {
-                _catch = Build(engine, _statement.Handler.Body);
-                _catchParamName = ((Identifier) _statement.Handler.Param).Name;
-            }
 
-            if (statement.Finalizer != null)
+        }
+
+        protected override void Initialize(EvaluationContext context)
+        {
+            _block = Build(_statement.Block);
+            if (_statement.Finalizer != null)
             {
-                _finalizer = Build(engine, _statement.Finalizer);
+                _finalizer = Build(_statement.Finalizer);
             }
         }
 
-        protected override Completion ExecuteInternal()
+        protected override bool SupportsResume => true;
+
+        protected override Completion ExecuteInternal(EvaluationContext context)
         {
-            var b = _block.Execute();
+            var engine = context.Engine;
+            int callStackSizeBeforeExecution = engine.CallStack.Count;
+
+            var b = _block.Execute(context);
+
             if (b.Type == CompletionType.Throw)
             {
-                // execute catch
-                if (_catch != null)
+                // initialize lazily
+                if (_statement.Handler is not null && _catch is null)
                 {
-                    var c = b.Value;
-                    var oldEnv = _engine.ExecutionContext.LexicalEnvironment;
-                    var catchEnv = LexicalEnvironment.NewDeclarativeEnvironment(_engine, oldEnv);
-                    var catchEnvRecord = (DeclarativeEnvironmentRecord) catchEnv._record;
-                    LogUtils.Log($"线程:{Thread.CurrentThread.ManagedThreadId}-位置:{b.Location.Start}-{b.Location.End}:出现异常:{b.Value}");
-                    catchEnvRecord.CreateMutableBindingAndInitialize(_catchParamName, canBeDeleted: false, c);
+                    _catch = Build(_statement.Handler.Body);
+                }
 
-                    _engine.UpdateLexicalEnvironment(catchEnv);
-                    b = _catch.Execute();
-                    _engine.UpdateLexicalEnvironment(oldEnv);
+                // execute catch
+                if (_statement.Handler is not null)
+                {
+                    // Quick-patch for call stack not being unwinded when an exception is caught.
+                    // Ideally, this should instead be solved by always popping the stack when returning
+                    // from a call, regardless of whether it throws (i.e. CallStack.Pop() in finally clause
+                    // in Engine.Call/Engine.Construct - however, that method currently breaks stack traces
+                    // in error messages.
+                    while (callStackSizeBeforeExecution < engine.CallStack.Count)
+                    {
+                        engine.CallStack.Pop();
+                    }
+
+                    // https://tc39.es/ecma262/#sec-runtime-semantics-catchclauseevaluation
+
+                    var thrownValue = b.Value;
+                    var oldEnv = engine.ExecutionContext.LexicalEnvironment;
+                    var catchEnv = JintEnvironment.NewDeclarativeEnvironment(engine, oldEnv, catchEnvironment: true);
+
+                    var boundNames = new List<string>();
+                    _statement.Handler.Param.GetBoundNames(boundNames);
+
+                    foreach (var argName in boundNames)
+                    {
+                        catchEnv.CreateMutableBinding(argName, false);
+                    }
+
+                    engine.UpdateLexicalEnvironment(catchEnv);
+
+                    var catchParam = _statement.Handler?.Param;
+                    catchParam.BindingInitialization(context, thrownValue, catchEnv);
+
+                    b = _catch.Execute(context);
+
+                    engine.UpdateLexicalEnvironment(oldEnv);
                 }
             }
 
             if (_finalizer != null)
             {
-                var f = _finalizer.Execute();
+                var f = _finalizer.Execute(context);
                 if (f.Type == CompletionType.Normal)
                 {
                     return b;
                 }
 
-                return f;
+                return f.UpdateEmpty(Undefined.Instance);
             }
 
-            return b;
+            return b.UpdateEmpty(Undefined.Instance);
         }
     }
 }

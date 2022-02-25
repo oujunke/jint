@@ -1,7 +1,5 @@
 ﻿using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Globalization;
 using System.Reflection;
 using Jint.Collections;
 using Jint.Native;
@@ -18,101 +16,85 @@ namespace Jint.Runtime.Interop
         private static readonly ConcurrentDictionary<Type, MethodDescriptor[]> _constructorCache = new();
         private static readonly ConcurrentDictionary<Tuple<Type, string>, ReflectionAccessor> _memberAccessors = new();
 
-        private TypeReference(Engine engine)
-            : base(engine, _name, FunctionThisMode.Global, ObjectClass.TypeReference)
+        private TypeReference(Engine engine, Type type)
+            : base(engine, engine.Realm, _name, FunctionThisMode.Global, ObjectClass.TypeReference)
         {
+            ReferenceType = type;
+
+            _prototype = engine.Realm.Intrinsics.Function.PrototypeObject;
+            _length = PropertyDescriptor.AllForbiddenDescriptor.NumberZero;
+            _prototypeDescriptor = new PropertyDescriptor(engine.Realm.Intrinsics.Object.PrototypeObject, PropertyFlag.AllForbidden);
+
+            PreventExtensions();
         }
 
-        public Type ReferenceType { get; set; }
+        public Type ReferenceType { get; }
+
+        public static TypeReference CreateTypeReference<T>(Engine engine)
+        {
+            return CreateTypeReference(engine, typeof(T));
+        }
 
         public static TypeReference CreateTypeReference(Engine engine, Type type)
         {
-            var obj = new TypeReference(engine);
-            obj.PreventExtensions();
-            obj.ReferenceType = type;
-
-            // The value of the [[Prototype]] internal property of the TypeReference constructor is the Function prototype object
-            obj._prototype = engine.Function.PrototypeObject;
-            obj._length = PropertyDescriptor.AllForbiddenDescriptor.NumberZero;
-
-            // The initial value of Boolean.prototype is the Boolean prototype object
-            obj._prototypeDescriptor = new PropertyDescriptor(engine.Object.PrototypeObject, PropertyFlag.AllForbidden);
-
-            return obj;
+            return new TypeReference(engine, type);
         }
 
         public override JsValue Call(JsValue thisObject, JsValue[] arguments)
         {
             // direct calls on a TypeReference constructor object is equivalent to the new operator
-            return Construct(arguments, thisObject);
+            return Construct(arguments);
         }
 
-        public ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+        ObjectInstance IConstructor.Construct(JsValue[] arguments, JsValue newTarget) => Construct(arguments);
+
+        private ObjectInstance Construct(JsValue[] arguments)
         {
+            ObjectInstance result = null;
             if (arguments.Length == 0 && ReferenceType.IsValueType)
             {
                 var instance = Activator.CreateInstance(ReferenceType);
-                var result = TypeConverter.ToObject(Engine, FromObject(Engine, instance));
+                result = TypeConverter.ToObject(_realm, FromObject(Engine, instance));
+            }
+            else
+            {
+                var constructors = _constructorCache.GetOrAdd(
+                    ReferenceType,
+                    t => MethodDescriptor.Build(t.GetConstructors(BindingFlags.Public | BindingFlags.Instance)));
+
+                foreach (var (method, _, _) in TypeConverter.FindBestMatch(_engine, constructors, _ => arguments))
+                {
+                    var retVal = method.Call(Engine, null, arguments);
+                    result = TypeConverter.ToObject(_realm, retVal);
+
+                    // todo: cache method info
+                    break;
+                }
+            }
+
+            if (result is not null)
+            {
+                if (result is ObjectWrapper objectWrapper)
+                {
+                    // allow class extension
+                    objectWrapper._allowAddingProperties = true;
+                }
 
                 return result;
             }
 
-            var constructors = _constructorCache.GetOrAdd(
-                ReferenceType,
-                t => MethodDescriptor.Build(t.GetConstructors(BindingFlags.Public | BindingFlags.Instance)));
-
-            foreach (var tuple in TypeConverter.FindBestMatch(_engine, constructors, _ => arguments))
-            {
-                var method = tuple.Item1;
-
-                var parameters = new object[arguments.Length];
-                var methodParameters = method.Parameters;
-                try
-                {
-                    for (var i = 0; i < arguments.Length; i++)
-                    {
-                        var parameterType = methodParameters[i].ParameterType;
-
-                        if (typeof(JsValue).IsAssignableFrom(parameterType))
-                        {
-                            parameters[i] = arguments[i];
-                        }
-                        else
-                        {
-                            parameters[i] = Engine.ClrTypeConverter.Convert(
-                                arguments[i].ToObject(),
-                                parameterType,
-                                CultureInfo.InvariantCulture);
-                        }
-                    }
-
-                    var constructor = (ConstructorInfo) method.Method;
-                    var instance = constructor.Invoke(parameters);
-                    var result = TypeConverter.ToObject(Engine, FromObject(Engine, instance));
-
-                    // todo: cache method info
-
-                    return result;
-                }
-                catch
-                {
-                    // ignore method
-                }
-            }
-
-            return ExceptionHelper.ThrowTypeError<ObjectInstance>(_engine, "No public methods with the specified arguments were found.");
+            ExceptionHelper.ThrowTypeError(_engine.Realm, "No public methods with the specified arguments were found.");
+            return null;
         }
 
-        public override bool HasInstance(JsValue v)
+        internal override bool OrdinaryHasInstance(JsValue v)
         {
-            if (v.IsObject())
+            if (v is IObjectWrapper wrapper)
             {
-                var wrapper = v.AsObject() as IObjectWrapper;
-                if (wrapper != null)
-                    return wrapper.Target.GetType() == ReferenceType;
+                return wrapper.Target.GetType() == ReferenceType;
             }
 
-            return base.HasInstance(v);
+            return base.OrdinaryHasInstance(v);
         }
 
         public override bool DefineOwnProperty(JsValue property, PropertyDescriptor desc)
@@ -149,77 +131,64 @@ namespace Jint.Runtime.Interop
             {
                 return PropertyDescriptor.Undefined;
             }
-            
+
             var key = jsString._value;
             var descriptor = PropertyDescriptor.Undefined;
 
             if (_properties?.TryGetValue(key, out descriptor) != true)
             {
                 descriptor = CreatePropertyDescriptor(key);
-                _properties ??= new PropertyDictionary();
-                _properties[key] = descriptor;
+                if (!ReferenceEquals(descriptor, PropertyDescriptor.Undefined))
+                {
+                    _properties ??= new PropertyDictionary();
+                    _properties[key] = descriptor;
+                    return descriptor;
+                }
             }
 
-            return descriptor;
+            return base.GetOwnProperty(property);
         }
 
         private PropertyDescriptor CreatePropertyDescriptor(string name)
         {
-            var accessor = _memberAccessors.GetOrAdd(
-                new Tuple<Type, string>(ReferenceType, name),
-                key => ResolveMemberAccessor(key.Item1, key.Item2)
-            );
+            var key = new Tuple<Type, string>(ReferenceType, name);
+            var accessor = _memberAccessors.GetOrAdd(key, x => ResolveMemberAccessor(x.Item1, x.Item2));
             return accessor.CreatePropertyDescriptor(_engine, ReferenceType);
         }
 
-        private static ReflectionAccessor ResolveMemberAccessor(Type type, string name)
+        private ReflectionAccessor ResolveMemberAccessor(Type type, string name)
         {
+            var typeResolver = _engine.Options.Interop.TypeResolver;
+
             if (type.IsEnum)
             {
+                var memberNameComparer = typeResolver.MemberNameComparer;
+                var typeResolverMemberNameCreator = typeResolver.MemberNameCreator;
+
                 var enumValues = Enum.GetValues(type);
                 var enumNames = Enum.GetNames(type);
 
                 for (var i = 0; i < enumValues.Length; i++)
                 {
-                    if (enumNames.GetValue(i) as string == name)
+                    var enumOriginalName = enumNames.GetValue(i).ToString();
+                    var member = type.GetMember(enumOriginalName)[0];
+                    foreach (var exposedName in typeResolverMemberNameCreator(member))
                     {
-                        return new ConstantValueAccessor((int) enumValues.GetValue(i));
+                        if (memberNameComparer.Equals(name, exposedName))
+                        {
+                            var value = enumValues.GetValue(i);
+                            return new ConstantValueAccessor(JsNumber.Create(value));
+                        }
                     }
                 }
 
                 return ConstantValueAccessor.NullAccessor;
             }
 
-            var propertyInfo = type.GetProperty(name, BindingFlags.Public | BindingFlags.Static);
-            if (propertyInfo != null)
-            {
-                return new PropertyAccessor(name, propertyInfo);
-            }
-
-            var fieldInfo = type.GetField(name, BindingFlags.Public | BindingFlags.Static);
-            if (fieldInfo != null)
-            {
-                return new FieldAccessor(fieldInfo, name);
-            }
-
-            List<MethodInfo> methods = null;
-            foreach (var mi in type.GetMethods(BindingFlags.Public | BindingFlags.Static))
-            {
-                if (mi.Name != name)
-                {
-                    continue;
-                }
-
-                methods ??= new List<MethodInfo>();
-                methods.Add(mi);
-            }
-
-            if (methods == null || methods.Count == 0)
-            {
-                return ConstantValueAccessor.NullAccessor;
-            }
-
-            return new MethodAccessor(MethodDescriptor.Build(methods));
+            const BindingFlags bindingFlags = BindingFlags.Public | BindingFlags.Static;
+            return typeResolver.TryFindMemberAccessor(_engine, type, name, bindingFlags, indexerToTry: null, out var accessor)
+                ? accessor
+                : ConstantValueAccessor.NullAccessor;
         }
 
         public object Target => ReferenceType;

@@ -17,62 +17,111 @@ namespace Jint.Native.Global
 {
     public sealed class GlobalObject : ObjectInstance
     {
-        private readonly StringBuilder _stringBuilder = new StringBuilder();
+        private readonly Realm _realm;
+        private readonly StringBuilder _stringBuilder = new();
 
-        private GlobalObject(Engine engine) : base(engine)
+        internal GlobalObject(
+            Engine engine,
+            Realm realm) : base(engine)
         {
-        }
-
-        public static GlobalObject CreateGlobalObject(Engine engine)
-        {
-            return new GlobalObject(engine);
+            _realm = realm;
+            // this is implementation dependent, and only to pass some unit tests
+            _prototype = realm.Intrinsics.Object.PrototypeObject;
         }
 
         protected override void Initialize()
         {
             const PropertyFlag lengthFlags = PropertyFlag.Configurable;
             const PropertyFlag propertyFlags = PropertyFlag.Configurable | PropertyFlag.Writable;
-            var properties = new PropertyDictionary(40, checkExistingKeys: false)
+
+            var properties = new PropertyDictionary(55, checkExistingKeys: false)
             {
-                ["Object"] = new PropertyDescriptor(Engine.Object, propertyFlags),
-                ["Function"] = new PropertyDescriptor(Engine.Function, propertyFlags),
-                ["Symbol"] = new PropertyDescriptor(Engine.Symbol, propertyFlags),
-                ["Array"] = new PropertyDescriptor(Engine.Array, propertyFlags),
-                ["Map"] = new PropertyDescriptor(Engine.Map, propertyFlags),
-                ["Set"] = new PropertyDescriptor(Engine.Set, propertyFlags),
-                ["String"] = new PropertyDescriptor(Engine.String, propertyFlags),
-                ["RegExp"] = new PropertyDescriptor(Engine.RegExp, propertyFlags),
-                ["Number"] = new PropertyDescriptor(Engine.Number, propertyFlags),
-                ["Boolean"] = new PropertyDescriptor(Engine.Boolean, propertyFlags),
-                ["Date"] = new PropertyDescriptor(Engine.Date, propertyFlags),
-                ["Math"] = new PropertyDescriptor(Engine.Math, propertyFlags),
-                ["JSON"] = new PropertyDescriptor(Engine.Json, propertyFlags),
-                ["Error"] = new LazyPropertyDescriptor(() => Engine.Error, propertyFlags),
-                ["EvalError"] = new LazyPropertyDescriptor(() => Engine.EvalError, propertyFlags),
-                ["Proxy"] = new LazyPropertyDescriptor(() => Engine.Proxy, propertyFlags),
-                ["RangeError"] = new LazyPropertyDescriptor(() => Engine.RangeError, propertyFlags),
-                ["ReferenceError"] = new LazyPropertyDescriptor(() => Engine.ReferenceError, propertyFlags),
-                ["Reflect"] = new LazyPropertyDescriptor(() => Engine.Reflect, propertyFlags),
-                ["SyntaxError"] = new LazyPropertyDescriptor(() => Engine.SyntaxError, propertyFlags),
-                ["TypeError"] = new LazyPropertyDescriptor(() => Engine.TypeError, propertyFlags),
-                ["URIError"] = new LazyPropertyDescriptor(() => Engine.UriError, propertyFlags),
-                ["NaN"] = new PropertyDescriptor(double.NaN, PropertyFlag.None),
-                ["Infinity"] = new PropertyDescriptor(double.PositiveInfinity, PropertyFlag.None),
-                ["undefined"] = new PropertyDescriptor(Undefined, PropertyFlag.None),
-                ["parseInt"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "parseInt", ParseInt, 2, lengthFlags), propertyFlags),
-                ["parseFloat"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "parseFloat", ParseFloat, 1, lengthFlags), propertyFlags),
-                ["isNaN"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "isNaN", IsNaN, 1, lengthFlags), propertyFlags),
-                ["isFinite"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "isFinite", IsFinite, 1, lengthFlags), propertyFlags),
-                ["decodeURI"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "decodeURI", DecodeUri, 1, lengthFlags), propertyFlags),
-                ["decodeURIComponent"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "decodeURIComponent", DecodeUriComponent, 1, lengthFlags), propertyFlags),
-                ["encodeURI"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "encodeURI", EncodeUri, 1, lengthFlags), propertyFlags),
-                ["encodeURIComponent"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "encodeURIComponent", EncodeUriComponent, 1, lengthFlags), propertyFlags),
-                ["escape"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "escape", Escape, 1), propertyFlags),
-                ["unescape"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "unescape", Unescape, 1), propertyFlags),
+                ["Object"] = new PropertyDescriptor(_realm.Intrinsics.Object, propertyFlags),
+                ["Function"] = new PropertyDescriptor(_realm.Intrinsics.Function, propertyFlags),
+                ["Symbol"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.Symbol, propertyFlags),
+                ["Array"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.Array, propertyFlags),
+                ["ArrayBuffer"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.ArrayBuffer, propertyFlags),
+                ["DataView"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.DataView, propertyFlags),
+                ["TypedArray"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.TypedArray, propertyFlags),
+                ["Int8Array"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.Int8Array, propertyFlags),
+                ["Uint8Array"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.Uint8Array, propertyFlags),
+                ["Uint8ClampedArray"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.Uint8ClampedArray, propertyFlags),
+                ["Int16Array"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.Int16Array, propertyFlags),
+                ["Uint16Array"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.Uint16Array, propertyFlags),
+                ["Int32Array"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.Int32Array, propertyFlags),
+                ["Uint32Array"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.Uint32Array, propertyFlags),
+                ["BigInt64Array"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.BigInt64Array, propertyFlags),
+                ["BigUint64Array"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.BigUint64Array, propertyFlags),
+                ["Float32Array"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.Float32Array, propertyFlags),
+                ["Float64Array"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.Float64Array, propertyFlags),
+                ["Map"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.Map, propertyFlags),
+                ["Set"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.Set, propertyFlags),
+                ["WeakMap"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.WeakMap, propertyFlags),
+                ["WeakSet"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.WeakSet, propertyFlags),
+                ["Promise"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.Promise, propertyFlags),
+                ["String"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.String, propertyFlags),
+                ["RegExp"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.RegExp, propertyFlags),
+                ["Number"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.Number, propertyFlags),
+                ["BigInt"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.BigInt, propertyFlags),
+                ["Boolean"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.Boolean, propertyFlags),
+                ["Date"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.Date, propertyFlags),
+                ["Math"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.Math, propertyFlags),
+                ["JSON"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.Json, propertyFlags),
+                ["Error"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.Error, propertyFlags),
+                ["EvalError"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.EvalError, propertyFlags),
+                ["Proxy"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.Proxy, propertyFlags),
+                ["RangeError"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.RangeError, propertyFlags),
+                ["ReferenceError"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.ReferenceError, propertyFlags),
+                ["Reflect"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.Reflect, propertyFlags),
+                ["SyntaxError"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.SyntaxError, propertyFlags),
+                ["TypeError"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.TypeError, propertyFlags),
+                ["URIError"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.UriError, propertyFlags),
+                ["NaN"] = new PropertyDescriptor(double.NaN, PropertyFlag.AllForbidden),
+                ["Infinity"] = new PropertyDescriptor(double.PositiveInfinity, PropertyFlag.AllForbidden),
+                ["undefined"] = new PropertyDescriptor(Undefined, PropertyFlag.AllForbidden),
+                ["parseInt"] = new LazyPropertyDescriptor(this, static state => new ClrFunctionInstance(((GlobalObject) state)._engine, "parseInt", ParseInt, 2, lengthFlags), propertyFlags),
+                ["parseFloat"] = new LazyPropertyDescriptor(this, static state => new ClrFunctionInstance(((GlobalObject) state)._engine, "parseFloat", ParseFloat, 1, lengthFlags), propertyFlags),
+                ["isNaN"] = new LazyPropertyDescriptor(this, static state => new ClrFunctionInstance(((GlobalObject) state)._engine, "isNaN", IsNaN, 1, lengthFlags), propertyFlags),
+                ["isFinite"] = new LazyPropertyDescriptor(this, static state => new ClrFunctionInstance(((GlobalObject) state)._engine, "isFinite", IsFinite, 1, lengthFlags), propertyFlags),
+                ["decodeURI"] = new LazyPropertyDescriptor(this, static state =>
+                {
+                    var global = (GlobalObject) state;
+                    return new ClrFunctionInstance(global._engine, "decodeURI", global.DecodeUri, 1, lengthFlags);
+                }, propertyFlags),
+                ["decodeURIComponent"] = new LazyPropertyDescriptor(this, static state =>
+                {
+                    var global = (GlobalObject) state;
+                    return new ClrFunctionInstance(global._engine, "decodeURIComponent", global.DecodeUriComponent, 1, lengthFlags);
+                }, propertyFlags),
+                ["encodeURI"] = new LazyPropertyDescriptor(this, static state =>
+                {
+                    var global = (GlobalObject) state;
+                    return new ClrFunctionInstance(global._engine, "encodeURI", global.EncodeUri, 1, lengthFlags);
+                }, propertyFlags),
+                ["encodeURIComponent"] = new LazyPropertyDescriptor(this, static state =>
+                {
+                    var global = (GlobalObject) state;
+                    return new ClrFunctionInstance(global._engine, "encodeURIComponent", global.EncodeUriComponent, 1, lengthFlags);
+                }, propertyFlags),
+                ["escape"] = new LazyPropertyDescriptor(this, static state =>
+                {
+                    var global = (GlobalObject) state;
+                    return new ClrFunctionInstance(global._engine, "escape", global.Escape, 1, lengthFlags);
+                }, propertyFlags),
+                ["unescape"] = new LazyPropertyDescriptor(this, static state =>
+                {
+                    var global = (GlobalObject) state;
+                    return new ClrFunctionInstance(global._engine, "unescape", global.Unescape, 1, lengthFlags);
+                }, propertyFlags),
                 ["globalThis"] = new PropertyDescriptor(this, propertyFlags),
+                ["eval"] = new LazyPropertyDescriptor(this, static state => ((GlobalObject) state)._realm.Intrinsics.Eval, PropertyFlag.Configurable | PropertyFlag.Writable),
 
                 // toString is not mentioned or actually required in spec, but some tests rely on it
-                ["toString"] = new PropertyDescriptor(new ClrFunctionInstance(Engine, "toString", ToStringString, 1), propertyFlags)
+                ["toString"] = new LazyPropertyDescriptor(this, static state =>
+                {
+                    var global = (GlobalObject) state;
+                    return new ClrFunctionInstance(global._engine, "toString", global.ToStringString, 1);
+                }, propertyFlags)
             };
 
             SetProperties(properties);
@@ -80,7 +129,7 @@ namespace Jint.Native.Global
 
         private JsValue ToStringString(JsValue thisObj, JsValue[] arguments)
         {
-            return _engine.Object.PrototypeObject.ToObjectString(thisObj, Arguments.Empty);
+            return _realm.Intrinsics.Object.PrototypeObject.ToObjectString(thisObj, Arguments.Empty);
         }
 
         /// <summary>
@@ -429,7 +478,7 @@ namespace Jint.Native.Global
                 {
                     if (c >= 0xDC00 && c <= 0xDBFF)
                     {
-                        ExceptionHelper.ThrowUriError(_engine);
+                        ExceptionHelper.ThrowUriError(_realm);
                     }
 
                     int v;
@@ -442,13 +491,13 @@ namespace Jint.Native.Global
                         k++;
                         if (k == strLen)
                         {
-                            ExceptionHelper.ThrowUriError(_engine);
+                            ExceptionHelper.ThrowUriError(_realm);
                         }
 
                         var kChar = (int)uriString[k];
                         if (kChar < 0xDC00 || kChar > 0xDFFF)
                         {
-                            ExceptionHelper.ThrowUriError(_engine);
+                            ExceptionHelper.ThrowUriError(_realm);
                         }
 
                         v = (c - 0xD800) * 0x400 + (kChar - 0xDC00) + 0x10000;
@@ -482,7 +531,7 @@ namespace Jint.Native.Global
                     }
                     else if (v <= 0xDFFF)
                     {
-                        ExceptionHelper.ThrowUriError(_engine);
+                        ExceptionHelper.ThrowUriError(_realm);
                     }
                     else if (v <= 0xFFFF)
                     {
@@ -552,12 +601,12 @@ namespace Jint.Native.Global
                     var start = k;
                     if (k + 2 >= strLen)
                     {
-                        ExceptionHelper.ThrowUriError(_engine);
+                        ExceptionHelper.ThrowUriError(_realm);
                     }
 
                     if (!IsValidHexaChar(uriString[k + 1]) || !IsValidHexaChar(uriString[k + 2]))
                     {
-                        ExceptionHelper.ThrowUriError(_engine);
+                        ExceptionHelper.ThrowUriError(_realm);
                     }
 
                     var B = Convert.ToByte(uriString[k + 1].ToString() + uriString[k + 2], 16);
@@ -582,7 +631,7 @@ namespace Jint.Native.Global
 
                         if (n == 1 || n > 4)
                         {
-                            ExceptionHelper.ThrowUriError(_engine);
+                            ExceptionHelper.ThrowUriError(_realm);
                         }
 
                         octets = octets.Length == n
@@ -593,7 +642,7 @@ namespace Jint.Native.Global
 
                         if (k + (3 * (n - 1)) >= strLen)
                         {
-                            ExceptionHelper.ThrowUriError(_engine);
+                            ExceptionHelper.ThrowUriError(_realm);
                         }
 
                         for (var j = 1; j < n; j++)
@@ -601,12 +650,12 @@ namespace Jint.Native.Global
                             k++;
                             if (uriString[k] != '%')
                             {
-                                ExceptionHelper.ThrowUriError(_engine);
+                                ExceptionHelper.ThrowUriError(_realm);
                             }
 
                             if (!IsValidHexaChar(uriString[k + 1]) || !IsValidHexaChar(uriString[k + 2]))
                             {
-                                ExceptionHelper.ThrowUriError(_engine);
+                                ExceptionHelper.ThrowUriError(_realm);
                             }
 
                             B = Convert.ToByte(uriString[k + 1].ToString() + uriString[k + 2], 16);
@@ -614,7 +663,7 @@ namespace Jint.Native.Global
                             // B & 11000000 != 10000000
                             if ((B & 0xC0) != 0x80)
                             {
-                                ExceptionHelper.ThrowUriError(_engine);
+                                ExceptionHelper.ThrowUriError(_realm);
                             }
 
                             k += 2;
@@ -680,7 +729,7 @@ namespace Jint.Native.Global
                 var c = uriString[k];
                 if (c == '%')
                 {
-                    if (k < strLen - 6
+                    if (k <= strLen - 6
                         && uriString[k + 1] == 'u'
                         && uriString.Skip(k + 2).Take(4).All(IsValidHexaChar))
                     {
@@ -690,7 +739,7 @@ namespace Jint.Native.Global
 
                         k += 5;
                     }
-                    else if (k < strLen - 3
+                    else if (k <= strLen - 3
                         && uriString.Skip(k + 1).Take(2).All(IsValidHexaChar))
                     {
                         c = (char)int.Parse(
@@ -719,7 +768,7 @@ namespace Jint.Native.Global
         {
             if (!DefineOwnProperty(property, desc))
             {
-                ExceptionHelper.ThrowTypeError(_engine);
+                ExceptionHelper.ThrowTypeError(_realm);
             }
 
             return true;
@@ -779,7 +828,7 @@ namespace Jint.Native.Global
                 return DefineOwnProperty(property, new PropertyDescriptor(value, PropertyFlag.None));
             }
 
-            if (!(existingDescriptor.Set is ICallable setter))
+            if (existingDescriptor.Set is not ICallable setter)
             {
                 return false;
             }
