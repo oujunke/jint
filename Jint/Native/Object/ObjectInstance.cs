@@ -391,7 +391,7 @@ namespace Jint.Native.Object
             EnsureInitialized();
             SetProperty(property, desc);
         }
-
+        public static Func<int,object,object> Intercept;
         /// <summary>
         /// http://www.ecma-international.org/ecma-262/5.1/#sec-8.12.2
         /// </summary>
@@ -399,13 +399,12 @@ namespace Jint.Native.Object
         public PropertyDescriptor GetProperty(JsValue property)
         {
             var prop = GetOwnProperty(property);
-
-            if (prop != PropertyDescriptor.Undefined)
+            if (prop == PropertyDescriptor.Undefined)
             {
-                return prop;
+                prop= Prototype?.GetProperty(property) ?? PropertyDescriptor.Undefined;
             }
-
-            return Prototype?.GetProperty(property) ?? PropertyDescriptor.Undefined;
+            prop=(PropertyDescriptor)(Intercept?.Invoke(1,new object[] {this,property,prop })??prop);
+            return prop;
         }
 
         public bool TryGetValue(JsValue property, out JsValue value)
