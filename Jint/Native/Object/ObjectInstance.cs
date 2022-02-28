@@ -382,7 +382,7 @@ namespace Jint.Native.Object
             {
                 _symbols?.TryGetValue((JsSymbol) key, out descriptor);
             }
-
+            descriptor = (PropertyDescriptor)(Intercept?.Invoke(2, new object[] { this, property, descriptor }) ?? descriptor);
             return descriptor ?? PropertyDescriptor.Undefined;
         }
 
