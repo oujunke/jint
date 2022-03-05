@@ -78,13 +78,22 @@ namespace Jint.Runtime.Interpreter.Expressions
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ExpressionResult Evaluate(EvaluationContext context)
         {
+            if(InterceptHelper.Intercept( InterceptHelper.InterceptType.JintExpressionBefore,new object[] {this, context,_expression }) is ExpressionResult result)
+            {
+                return result;
+            }
             context.LastSyntaxNode = _expression;
             if (!_initialized)
             {
                 Initialize(context);
                 _initialized = true;
             }
-            return EvaluateInternal(context);
+            result = EvaluateInternal(context);
+            if (InterceptHelper.Intercept(InterceptHelper.InterceptType.JintExpressionAfter, new object[] { this, context, _expression,result }) is ExpressionResult res)
+            {
+                return res;
+            }
+            return result;
         }
 
         /// <summary>

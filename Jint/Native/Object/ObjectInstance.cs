@@ -89,7 +89,7 @@ namespace Jint.Native.Object
         {
             newTarget ??= f;
             argumentsList ??= System.Array.Empty<JsValue>();
-            return f.Construct(argumentsList, (JsValue) newTarget);
+            return f.Construct(argumentsList, (JsValue)newTarget);
         }
 
         /// <summary>
@@ -117,7 +117,7 @@ namespace Jint.Native.Object
 
             if (s.IsConstructor)
             {
-                return (IConstructor) s;
+                return (IConstructor)s;
             }
 
             ExceptionHelper.ThrowTypeError(o._engine.Realm);
@@ -184,7 +184,7 @@ namespace Jint.Native.Object
             else
             {
                 _symbols ??= new SymbolDictionary();
-                _symbols[(JsSymbol) propertyKey] = value;
+                _symbols[(JsSymbol)propertyKey] = value;
             }
         }
 
@@ -283,7 +283,7 @@ namespace Jint.Native.Object
                 return _properties?.TryGetValue(TypeConverter.ToString(key), out descriptor) == true;
             }
 
-            return _symbols?.TryGetValue((JsSymbol) key, out descriptor) == true;
+            return _symbols?.TryGetValue((JsSymbol)key, out descriptor) == true;
         }
 
         public override bool HasOwnProperty(JsValue property)
@@ -296,7 +296,7 @@ namespace Jint.Native.Object
                 return _properties?.ContainsKey(TypeConverter.ToString(key)) == true;
             }
 
-            return _symbols?.ContainsKey((JsSymbol) key) == true;
+            return _symbols?.ContainsKey((JsSymbol)key) == true;
         }
 
         public virtual void RemoveOwnProperty(JsValue property)
@@ -310,7 +310,7 @@ namespace Jint.Native.Object
                 return;
             }
 
-            _symbols?.Remove((JsSymbol) key);
+            _symbols?.Remove((JsSymbol)key);
         }
 
         public override JsValue Get(JsValue property, JsValue receiver)
@@ -358,7 +358,7 @@ namespace Jint.Native.Object
                 return Undefined;
             }
 
-            var functionInstance = (FunctionInstance) getter;
+            var functionInstance = (FunctionInstance)getter;
             return functionInstance._engine.Call(functionInstance, thisObject, Arguments.Empty, expression: null);
         }
 
@@ -380,9 +380,9 @@ namespace Jint.Native.Object
             }
             else
             {
-                _symbols?.TryGetValue((JsSymbol) key, out descriptor);
+                _symbols?.TryGetValue((JsSymbol)key, out descriptor);
             }
-            descriptor = (PropertyDescriptor)(Intercept?.Invoke(2, new object[] { this, property, descriptor }) ?? descriptor);
+            descriptor = (PropertyDescriptor)(InterceptHelper.Intercept?.Invoke(InterceptHelper.InterceptType.GetOwnProperty, new object[] { this, property, descriptor }) ?? descriptor);
             return descriptor ?? PropertyDescriptor.Undefined;
         }
 
@@ -391,7 +391,7 @@ namespace Jint.Native.Object
             EnsureInitialized();
             SetProperty(property, desc);
         }
-        public static Func<int,object,object> Intercept;
+
         /// <summary>
         /// http://www.ecma-international.org/ecma-262/5.1/#sec-8.12.2
         /// </summary>
@@ -401,9 +401,9 @@ namespace Jint.Native.Object
             var prop = GetOwnProperty(property);
             if (prop == PropertyDescriptor.Undefined)
             {
-                prop= Prototype?.GetProperty(property) ?? PropertyDescriptor.Undefined;
+                prop = Prototype?.GetProperty(property) ?? PropertyDescriptor.Undefined;
             }
-            prop=(PropertyDescriptor)(Intercept?.Invoke(1,new object[] {this,property,prop })??prop);
+            prop = (PropertyDescriptor)(InterceptHelper.Intercept?.Invoke(InterceptHelper.InterceptType.GetProperty, new object[] { this, property, prop }) ?? prop);
             return prop;
         }
 
@@ -844,13 +844,13 @@ namespace Jint.Native.Object
                 if (!ReferenceEquals(descGet, null))
                 {
                     mutable = new GetSetPropertyDescriptor(mutable ?? current);
-                    ((GetSetPropertyDescriptor) mutable).SetGet(descGet);
+                    ((GetSetPropertyDescriptor)mutable).SetGet(descGet);
                 }
 
                 if (!ReferenceEquals(descSet, null))
                 {
                     mutable = new GetSetPropertyDescriptor(mutable ?? current);
-                    ((GetSetPropertyDescriptor) mutable).SetSet(descSet);
+                    ((GetSetPropertyDescriptor)mutable).SetSet(descSet);
                 }
 
                 if (mutable != null)
@@ -951,7 +951,7 @@ namespace Jint.Native.Object
                 case ObjectClass.Boolean:
                     if (this is BooleanInstance booleanInstance)
                     {
-                        converted = ((JsBoolean) booleanInstance.BooleanData)._value
+                        converted = ((JsBoolean)booleanInstance.BooleanData)._value
                             ? JsBoolean.BoxedTrue
                             : JsBoolean.BoxedFalse;
                     }
@@ -960,7 +960,7 @@ namespace Jint.Native.Object
                 case ObjectClass.Function:
                     if (this is ICallable function)
                     {
-                        converted = (Func<JsValue, JsValue[], JsValue>) function.Call;
+                        converted = (Func<JsValue, JsValue[], JsValue>)function.Call;
                     }
 
                     break;
@@ -1037,11 +1037,11 @@ namespace Jint.Native.Object
                     else
                     {
                         // if getter is not undefined it must be ICallable
-                        len = TypeConverter.ToNumber(((ICallable) getter).Call(this, Arguments.Empty));
+                        len = TypeConverter.ToNumber(((ICallable)getter).Call(this, Arguments.Empty));
                     }
                 }
 
-                return (long) System.Math.Max(
+                return (long)System.Math.Max(
                     0,
                     System.Math.Min(len, ArrayOperations.MaxArrayLikeLength));
             }
@@ -1117,14 +1117,14 @@ namespace Jint.Native.Object
 
         public virtual bool IsArrayLike => TryGetValue(CommonProperties.Length, out var lengthValue)
                                            && lengthValue.IsNumber()
-                                           && ((JsNumber) lengthValue)._value >= 0;
+                                           && ((JsNumber)lengthValue)._value >= 0;
 
         // safe default
         internal virtual bool HasOriginalIterator => false;
 
         internal override bool IsIntegerIndexedArray => false;
 
-        public virtual uint Length => (uint) TypeConverter.ToLength(Get(CommonProperties.Length));
+        public virtual uint Length => (uint)TypeConverter.ToLength(Get(CommonProperties.Length));
 
         public virtual bool PreventExtensions()
         {
@@ -1282,7 +1282,7 @@ namespace Jint.Native.Object
         {
             var ownKeys = GetOwnPropertyKeys(Types.String);
 
-            var array = Engine.Realm.Intrinsics.Array.ArrayCreate((uint) ownKeys.Count);
+            var array = Engine.Realm.Intrinsics.Array.ArrayCreate((uint)ownKeys.Count);
             uint index = 0;
 
             for (var i = 0; i < ownKeys.Count; i++)

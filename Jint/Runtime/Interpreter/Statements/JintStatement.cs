@@ -30,6 +30,10 @@ namespace Jint.Runtime.Interpreter.Statements
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public Completion Execute(EvaluationContext context)
         {
+            if(InterceptHelper.Intercept( InterceptHelper.InterceptType.JintStatementBefore,new object[] {this,context , _statement }) is Completion completion)
+            {
+                return completion;
+            }
             if (_statement.Type != Nodes.BlockStatement)
             {
                 context.LastSyntaxNode = _statement;
@@ -46,8 +50,12 @@ namespace Jint.Runtime.Interpreter.Statements
             {
                 return NormalCompletion(JsValue.Undefined);
             }
-
-            return ExecuteInternal(context);
+            var result = ExecuteInternal(context);
+            if (InterceptHelper.Intercept(InterceptHelper.InterceptType.JintStatementAfter, new object[] { this, context, _statement,result }) is Completion completion1)
+            {
+                return completion1;
+            }
+            return result;
         }
 
         protected virtual bool SupportsResume => false;
