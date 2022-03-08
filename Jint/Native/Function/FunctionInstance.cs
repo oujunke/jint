@@ -80,8 +80,8 @@ namespace Jint.Native.Function
 
         public bool Strict => _thisMode == FunctionThisMode.Strict;
 
-        internal override bool IsConstructor => this is IConstructor;
-
+        internal override bool IsConstructor => IsConstructors;
+        protected virtual bool IsConstructors => this is IConstructor;
         public override IEnumerable<KeyValuePair<JsValue, PropertyDescriptor>> GetOwnProperties()
         {
             if (_prototypeDescriptor != null)
