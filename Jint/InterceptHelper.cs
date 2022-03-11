@@ -1,4 +1,6 @@
-﻿using System;
+﻿using Jint.Collections;
+using Jint.Native.Object;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -17,12 +19,13 @@ namespace Jint
         public static Func<InterceptType, object[], object> Intercept;
         public enum InterceptType
         {
-            GetProperty=1,
+            GetProperty = 1,
             GetOwnProperty,
             JintStatementBefore,
             JintStatementAfter,
             JintExpressionBefore,
             JintExpressionAfter,
+            GlobalTryGetBinding,
         }
     }
 }

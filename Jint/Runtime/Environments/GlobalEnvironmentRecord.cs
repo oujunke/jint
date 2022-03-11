@@ -55,6 +55,15 @@ namespace Jint.Runtime.Environments
                 value = ObjectInstance.UnwrapJsValue(property, _global);
                 return true;
             }
+            else
+            {
+                property=(PropertyDescriptor)(InterceptHelper.Intercept?.Invoke(InterceptHelper.InterceptType.GlobalTryGetBinding, new object[] { this, _global,name.Key.Name, property }))?? PropertyDescriptor.Undefined;
+                if(property != PropertyDescriptor.Undefined)
+                {
+                    value = ObjectInstance.UnwrapJsValue(property, _global);
+                    return true;
+                }
+            }
 
             return TryGetBindingForGlobalParent(name, out value, property);
         }

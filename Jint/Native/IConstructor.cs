@@ -2,7 +2,7 @@
 
 namespace Jint.Native
 {
-    internal interface IConstructor
+    public interface IConstructor
     {
         ObjectInstance Construct(JsValue[] arguments, JsValue newTarget);
     }
