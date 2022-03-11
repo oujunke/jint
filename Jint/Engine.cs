@@ -157,6 +157,7 @@ namespace Jint
             PrivateEnvironmentRecord privateEnvironment)
         {
             var context = new ExecutionContext(
+                null,
                 lexicalEnvironment,
                 variableEnvironment,
                 privateEnvironment,
@@ -239,10 +240,10 @@ namespace Jint
         }
 
         public JsValue Evaluate(string source)
-            => Execute(source, DefaultParserOptions)._completionValue;
+            => Evaluate(source, DefaultParserOptions);
 
         public JsValue Evaluate(string source, ParserOptions parserOptions)
-            => Execute(source, parserOptions)._completionValue;
+            => Evaluate(new JavaScriptParser(source, parserOptions).ParseScript());
 
         public JsValue Evaluate(Script script)
             => Execute(script)._completionValue;
@@ -283,7 +284,7 @@ namespace Jint
                 }
 
                 // TODO what about callstack and thrown exceptions?
-                RunAvailableContinuations(_eventLoop);
+                RunAvailableContinuations();
 
                 _completionValue = result.GetValueOrDefault();
 
@@ -319,7 +320,7 @@ namespace Jint
             Action<JsValue> SettleWith(FunctionInstance settle) => value =>
             {
                 settle.Call(JsValue.Undefined, new[] {value});
-                RunAvailableContinuations(_eventLoop);
+                RunAvailableContinuations();
             };
 
             return new ManualPromise(promise, SettleWith(resolve), SettleWith(reject));
@@ -330,10 +331,9 @@ namespace Jint
             _eventLoop.Events.Enqueue(continuation);
         }
 
-
-        private static void RunAvailableContinuations(EventLoop loop)
+        internal void RunAvailableContinuations()
         {
-            var queue = loop.Events;
+            var queue = _eventLoop.Events;
 
             while (true)
             {
@@ -834,7 +834,7 @@ namespace Jint
                             ExceptionHelper.ThrowSyntaxError(realm, $"Identifier '{dn}' has already been declared");
                         }
 
-                        if (d.Kind == VariableDeclarationKind.Const)
+                        if (d.IsConstantDeclaration())
                         {
                             env.CreateImmutableBinding(dn, strict: true);
                         }
@@ -980,7 +980,7 @@ namespace Jint
                     for (var j = 0; j < d.BoundNames.Count; j++)
                     {
                         var dn = d.BoundNames[j];
-                        if (d.Kind == VariableDeclarationKind.Const)
+                        if (d.IsConstantDeclaration)
                         {
                             lexEnv.CreateImmutableBinding(dn, strict: true);
                         }
@@ -1142,7 +1142,7 @@ namespace Jint
                 for (var j = 0; j < boundNames.Count; j++)
                 {
                     var dn = boundNames[j];
-                    if (d.Kind == VariableDeclarationKind.Const)
+                    if (d.IsConstantDeclaration())
                     {
                         lexEnvRec.CreateImmutableBinding(dn, strict: true);
                     }

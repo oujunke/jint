@@ -510,6 +510,7 @@ namespace Jint.Runtime
             {
                 intValue *= -1;
             }
+
             var int16Bit = intValue % 65_536; // 2^16
             return (ushort) int16Bit;
         }
@@ -713,6 +714,7 @@ namespace Jint.Runtime
                         {
                             return false;
                         }
+
                         bigInteger = bigInteger * 8 + c - '0';
                     }
 
@@ -755,6 +757,7 @@ namespace Jint.Runtime
             {
                 return (long) (int64bit - BigInteger.Pow(2, 64));
             }
+
             return (long) int64bit;
         }
 
@@ -1114,10 +1117,60 @@ namespace Jint.Runtime
                 {
                     return parameterScore;
                 }
+
                 score += parameterScore;
             }
 
             return score;
+        }
+
+        /// <summary>
+        /// resources:
+        /// https://docs.microsoft.com/en-us/dotnet/framework/reflection-and-codedom/how-to-examine-and-instantiate-generic-types-with-reflection
+        /// https://stackoverflow.com/questions/74616/how-to-detect-if-type-is-another-generic-type/1075059#1075059
+        /// https://docs.microsoft.com/en-us/dotnet/api/system.type.isconstructedgenerictype?view=net-6.0
+        /// This can be improved upon - specifically as mentioned in the above MS document:
+        /// GetGenericParameterConstraints()
+        /// and array handling - i.e.
+        /// GetElementType()
+        /// </summary>
+        /// <param name="givenType"></param>
+        /// <param name="genericType"></param>
+        /// <returns></returns>
+        internal static int IsAssignableToGenericType(Type givenType, Type genericType)
+        {
+            if (!genericType.IsConstructedGenericType)
+            {
+                // as mentioned here:
+                // https://docs.microsoft.com/en-us/dotnet/api/system.type.isconstructedgenerictype?view=net-6.0
+                // this effectively means this generic type is open (i.e. not closed) - so any type is "possible" - without looking at the code in the method we don't know
+                // whether any operations are being applied that "don't work"
+                return 2;
+            }
+
+            var interfaceTypes = givenType.GetInterfaces();
+
+            foreach (var it in interfaceTypes)
+            {
+                if (it.IsGenericType && it.GetGenericTypeDefinition() == genericType)
+                {
+                    return 0;
+                }
+            }
+
+            if (givenType.IsGenericType && givenType.GetGenericTypeDefinition() == genericType)
+            {
+                return 0;
+            }
+
+            Type baseType = givenType.BaseType;
+            if (baseType == null)
+            {
+                return -1;
+            }
+
+            var result = IsAssignableToGenericType(baseType, genericType);
+            return result;
         }
 
         /// <summary>
@@ -1191,21 +1244,28 @@ namespace Jint.Runtime
                 return 2;
             }
 
+            // not sure the best point to start generic type tests
+            if (paramType.IsGenericParameter)
+            {
+                var genericTypeAssignmentScore = IsAssignableToGenericType(objectValueType, paramType);
+                if (genericTypeAssignmentScore != -1)
+                {
+                    return genericTypeAssignmentScore;
+                }
+            }
+
             if (CanChangeType(objectValue, paramType))
             {
-                // forcing conversion isn't ideal not ideal, but works, especially for int -> double for example
+                // forcing conversion isn't ideal, but works, especially for int -> double for example
                 return 1;
             }
 
-            if (engine.Options.Interop.AllowOperatorOverloading)
+            foreach (var m in objectValueType.GetOperatorOverloadMethods())
             {
-                foreach (var m in objectValueType.GetOperatorOverloadMethods())
+                if (paramType.IsAssignableFrom(m.ReturnType) && m.Name is "op_Implicit" or "op_Explicit")
                 {
-                    if (paramType.IsAssignableFrom(m.ReturnType) && m.Name is "op_Implicit" or "op_Explicit")
-                    {
-                        // implicit/explicit operator conversion is OK, but not ideal
-                        return 1;
-                    }
+                    // implicit/explicit operator conversion is OK, but not ideal
+                    return 1;
                 }
             }
 
