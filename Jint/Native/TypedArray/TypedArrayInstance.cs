@@ -14,6 +14,7 @@ namespace Jint.Native.TypedArray
     {
         internal readonly TypedArrayContentType _contentType;
         internal readonly TypedArrayElementType _arrayElementType;
+        public TypedArrayElementType ArrayElementType { get => _arrayElementType; }
         internal ArrayBufferInstance _viewedArrayBuffer;
         internal uint _byteLength;
         internal int _byteOffset;
