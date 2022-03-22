@@ -16,40 +16,53 @@ internal sealed class ModuleEnvironmentRecord : DeclarativeEnvironmentRecord
     {
     }
 
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-module-environment-records-getthisbinding
+    /// </summary>
     public override JsValue GetThisBinding()
     {
         return Undefined;
     }
 
-    public void CreateImportBinding(string importName, JsModule module, string name)
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-createimportbinding
+    /// </summary>
+    public void CreateImportBinding(string importName, ModuleRecord module, string name)
     {
         _hasBindings = true;
         _importBindings[importName] = new IndirectBinding(module, name);
+        CreateImmutableBindingAndInitialize(importName, true, JsValue.Undefined);
     }
 
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-module-environment-records-getbindingvalue-n-s
+    /// </summary>
     public override JsValue GetBindingValue(string name, bool strict)
     {
         if (_importBindings.TryGetValue(name, out var indirectBinding))
         {
-            return base.GetBindingValue(name, strict);
+            return indirectBinding.Module._environment.GetBindingValue(indirectBinding.BindingName, true);
         }
 
-        return indirectBinding.Module._environment.GetBindingValue(indirectBinding.BindingName, true);
+        return base.GetBindingValue(name, strict);
     }
 
     internal override bool TryGetBinding(in BindingName name, bool strict, out Binding binding, out JsValue value)
     {
-        if (!_importBindings.TryGetValue(name.Key, out var indirectBinding))
+        if (_importBindings.TryGetValue(name.Key, out var indirectBinding))
         {
-            return base.TryGetBinding(name, strict, out binding, out value);
+            value = indirectBinding.Module._environment.GetBindingValue(indirectBinding.BindingName, true);
+            binding = new(value, canBeDeleted: false, mutable: false, strict: true);
+            return true;
         }
 
-        value = indirectBinding.Module._environment.GetBindingValue(indirectBinding.BindingName, true);
-        binding = new(value, false, false, true);
-        return true;
+        return base.TryGetBinding(name, strict, out binding, out value);
     }
 
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-module-environment-records-hasthisbinding
+    /// </summary>
     public override bool HasThisBinding() => true;
 
-    private readonly record struct IndirectBinding(JsModule Module, string BindingName);
+    private readonly record struct IndirectBinding(ModuleRecord Module, string BindingName);
 }
