@@ -5,7 +5,7 @@ namespace Jint.Runtime.Interpreter
     /// <summary>
     /// Per Engine.Evalute() call context.
     /// </summary>
-    internal sealed class EvaluationContext
+    public sealed class EvaluationContext
     {
         public EvaluationContext(Engine engine, in Completion? resumedCompletion = null)
         {
