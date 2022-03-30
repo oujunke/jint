@@ -46,6 +46,10 @@ namespace Jint.Runtime.Interpreter
 
             var blockStatement = (BlockStatement) Function.Body;
             _bodyStatementList ??= new JintStatementList(blockStatement, blockStatement.Body);
+            if (InterceptHelper.Intercept(InterceptHelper.InterceptType.JintFunctionDefinitionBefore, new object[] { Name, Function, context, _bodyStatementList }) is Completion completion)
+            {
+                return completion;
+            }
             return _bodyStatementList.Execute(context);
         }
 
@@ -298,7 +302,7 @@ namespace Jint.Runtime.Interpreter
             out bool hasArguments)
         {
             hasArguments = false;
-            state.IsSimpleParameterList  = true;
+            state.IsSimpleParameterList = true;
 
             ref readonly var functionDeclarationParams = ref function.Params;
             var count = functionDeclarationParams.Count;
