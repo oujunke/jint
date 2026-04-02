@@ -1,186 +1,368 @@
-using System.Collections.Generic;
-using Esprima.Ast;
 using Jint.Native;
 using Jint.Runtime.Environments;
 using Jint.Runtime.Interpreter.Expressions;
+using Environment = Jint.Runtime.Environments.Environment;
 
-namespace Jint.Runtime.Interpreter.Statements
+namespace Jint.Runtime.Interpreter.Statements;
+
+/// <summary>
+/// https://tc39.es/ecma262/#sec-forbodyevaluation
+/// </summary>
+internal sealed class JintForStatement : JintStatement<ForStatement>
 {
-    /// <summary>
-    /// https://tc39.es/ecma262/#sec-forbodyevaluation
-    /// </summary>
-    internal sealed class JintForStatement : JintStatement<ForStatement>
+    private readonly JintVariableDeclaration? _initStatement;
+    private readonly JintExpression? _initExpression;
+
+    private readonly JintExpression? _test;
+    private readonly JintExpression? _increment;
+
+    private readonly ProbablyBlockStatement _body;
+    private readonly List<Key>? _boundNames;
+
+    private readonly bool _shouldCreatePerIterationEnvironment;
+    private readonly bool _canReuseIterationEnvironment;
+
+    public JintForStatement(ForStatement statement) : base(statement)
     {
-        private JintVariableDeclaration _initStatement;
-        private JintExpression _initExpression;
+        _body = new ProbablyBlockStatement(statement.Body);
 
-        private JintExpression _test;
-        private JintExpression _increment;
-
-        private JintStatement _body;
-        private List<string> _boundNames;
-
-        private bool _shouldCreatePerIterationEnvironment;
-
-        public JintForStatement(ForStatement statement) : base(statement)
+        if (statement.Init != null)
         {
+            if (statement.Init.Type == NodeType.VariableDeclaration)
+            {
+                var d = (VariableDeclaration) statement.Init;
+                if (d.Kind != VariableDeclarationKind.Var)
+                {
+                    _boundNames = new List<Key>();
+                    d.GetBoundNames(_boundNames);
+                }
+                _initStatement = new JintVariableDeclaration(d);
+                _shouldCreatePerIterationEnvironment = d.Kind == VariableDeclarationKind.Let;
+
+                // If no closures in the loop body/test/update capture the iteration environment,
+                // we can reuse the same environment each iteration instead of allocating a new one
+                if (_shouldCreatePerIterationEnvironment)
+                {
+                    _canReuseIterationEnvironment = !ForLoopMayCapture(statement);
+                }
+            }
+            else
+            {
+                _initExpression = JintExpression.Build((Expression) statement.Init);
+            }
         }
 
-        protected override void Initialize(EvaluationContext context)
+        if (statement.Test != null)
         {
-            var engine = context.Engine;
-            _body = Build(_statement.Body);
+            _test = JintExpression.Build(statement.Test);
+        }
 
-            if (_statement.Init != null)
+        if (statement.Update != null)
+        {
+            _increment = JintExpression.Build(statement.Update);
+        }
+    }
+
+    protected override Completion ExecuteInternal(EvaluationContext context)
+    {
+        Environment? oldEnv = null;
+        DeclarativeEnvironment? loopEnv = null;
+        var engine = context.Engine;
+
+        // Check if we're resuming from a yield/await inside this for statement
+        // If resuming from body, test, or update, skip initialization to avoid resetting loop variables
+        // If resuming from init expression, we must re-execute init to complete pending nested awaits
+        var suspendable = engine.ExecutionContext.Suspendable;
+
+        // Get the resume node from the unified interface
+        Node? resumeNode = null;
+        if (suspendable is { IsResuming: true, LastSuspensionNode: not null })
+        {
+            // LastSuspensionNode could be a Node directly (yield) or a JintExpression (await)
+            resumeNode = suspendable.LastSuspensionNode as Node
+                ?? (suspendable.LastSuspensionNode as JintExpression)?._expression as Node;
+        }
+
+        // Only skip init when resuming from body/test/update, NOT from init
+        var resumingInLoop = resumeNode is not null && IsNodeInsideForStatementExcludingInit(resumeNode);
+
+        ForLoopSuspendData? suspendData = null;
+        if (resumingInLoop && _boundNames != null)
+        {
+            suspendable?.Data.TryGet(this, out suspendData);
+        }
+
+        if (_boundNames != null)
+        {
+            oldEnv = engine.ExecutionContext.LexicalEnvironment;
+            loopEnv = JintEnvironment.NewDeclarativeEnvironment(engine, oldEnv);
+            var loopEnvRec = loopEnv;
+            var kind = _initStatement!._statement.Kind;
+            for (var i = 0; i < _boundNames.Count; i++)
             {
-                if (_statement.Init.Type == Nodes.VariableDeclaration)
+                var name = _boundNames[i];
+                // const, using, and await using all create immutable bindings
+                if (kind is VariableDeclarationKind.Const or VariableDeclarationKind.Using or VariableDeclarationKind.AwaitUsing)
                 {
-                    var d = (VariableDeclaration) _statement.Init;
-                    if (d.Kind != VariableDeclarationKind.Var)
-                    {
-                        _boundNames = new List<string>();
-                        d.GetBoundNames(_boundNames);
-                    }
-                    _initStatement = new JintVariableDeclaration(d);
-                    _shouldCreatePerIterationEnvironment = d.Kind == VariableDeclarationKind.Let;
+                    loopEnvRec.CreateImmutableBinding(name);
                 }
                 else
                 {
-                    _initExpression = JintExpression.Build(engine, (Expression) _statement.Init);
+                    loopEnvRec.CreateMutableBinding(name);
                 }
             }
 
-            if (_statement.Test != null)
-            {
-                _test = JintExpression.Build(engine, _statement.Test);
-            }
+            engine.UpdateLexicalEnvironment(loopEnv);
 
-            if (_statement.Update != null)
+            // Restore loop variable values if resuming
+            if (resumingInLoop && suspendData?.BoundValues is not null)
             {
-                _increment = JintExpression.Build(engine, _statement.Update);
+                foreach (var kvp in suspendData.BoundValues)
+                {
+                    loopEnvRec.InitializeBinding(kvp.Key, kvp.Value, DisposeHint.Normal);
+                }
             }
         }
 
-        protected override Completion ExecuteInternal(EvaluationContext context)
+        var completion = Completion.Empty();
+        try
         {
-            EnvironmentRecord oldEnv = null;
-            EnvironmentRecord loopEnv = null;
-            var engine = context.Engine;
-            if (_boundNames != null)
-            {
-                oldEnv = engine.ExecutionContext.LexicalEnvironment;
-                loopEnv = JintEnvironment.NewDeclarativeEnvironment(engine, oldEnv);
-                var loopEnvRec = loopEnv;
-                var kind = _initStatement._statement.Kind;
-                for (var i = 0; i < _boundNames.Count; i++)
-                {
-                    var name = _boundNames[i];
-                    if (kind == VariableDeclarationKind.Const)
-                    {
-                        loopEnvRec.CreateImmutableBinding(name, true);
-                    }
-                    else
-                    {
-                        loopEnvRec.CreateMutableBinding(name, false);
-                    }
-                }
-
-                engine.UpdateLexicalEnvironment(loopEnv);
-            }
-
-            try
+            // Skip initialization if resuming from inside the loop (body, test, or update)
+            if (!resumingInLoop)
             {
                 if (_initExpression != null)
                 {
                     _initExpression?.GetValue(context);
+
+                    // Check for async suspension in init expression
+                    if (context.IsSuspended())
+                    {
+                        return new Completion(CompletionType.Return, JsValue.Undefined, _statement);
+                    }
                 }
                 else
                 {
                     _initStatement?.Execute(context);
+
+                    // Check for async suspension in init statement
+                    if (context.IsSuspended())
+                    {
+                        return new Completion(CompletionType.Return, JsValue.Undefined, _statement);
+                    }
+                }
+            }
+
+            completion = ForBodyEvaluation(context);
+            return completion;
+        }
+        finally
+        {
+            if (oldEnv is not null)
+            {
+                // Save loop variable values if generator/async function is suspended (don't save on normal completion)
+                if (context.IsSuspended() && _boundNames != null && suspendable is not null)
+                {
+                    // Use the CURRENT lexical environment, not loopEnv, because
+                    // CreatePerIterationEnvironment may have created new environments during the loop
+                    var currentEnv = engine.ExecutionContext.LexicalEnvironment;
+
+                    var data = suspendable.Data.GetOrCreate<ForLoopSuspendData>(this);
+                    data.BoundValues ??= new Dictionary<Key, JsValue>();
+                    for (var i = 0; i < _boundNames.Count; i++)
+                    {
+                        var name = _boundNames[i];
+                        var value = currentEnv.GetBindingValue(name, strict: false);
+                        data.BoundValues[name] = value;
+                    }
+                }
+                else if (!context.IsSuspended())
+                {
+                    // Clear suspend data on normal completion
+                    suspendable?.Data.Clear(this);
                 }
 
-                return ForBodyEvaluation(context);
+                loopEnv!.DisposeResources(completion);
+                engine.UpdateLexicalEnvironment(oldEnv);
             }
-            finally
+        }
+    }
+
+    /// <summary>
+    /// Checks if the given node is inside this for statement's body, test, or update (but NOT init).
+    /// Used to determine if we're resuming from a yield/await inside the loop.
+    /// When resuming from init, we must re-execute init to complete nested awaits.
+    /// When resuming from body/test/update, we skip init to avoid resetting variables.
+    /// </summary>
+    private bool IsNodeInsideForStatementExcludingInit(Node node)
+    {
+        var nodeRange = node.Range;
+
+        // Check if inside body
+        var bodyRange = _statement.Body.Range;
+        if (bodyRange.Start <= nodeRange.Start && nodeRange.End <= bodyRange.End)
+        {
+            return true;
+        }
+
+        // Check if inside test expression
+        if (_statement.Test != null)
+        {
+            var testRange = _statement.Test.Range;
+            if (testRange.Start <= nodeRange.Start && nodeRange.End <= testRange.End)
             {
-                if (oldEnv is not null)
-                {
-                    engine.UpdateLexicalEnvironment(oldEnv);
-                }
+                return true;
             }
         }
 
-        /// <summary>
-        /// https://tc39.es/ecma262/#sec-forbodyevaluation
-        /// </summary>
-        private Completion ForBodyEvaluation(EvaluationContext context)
+        // Check if inside update expression
+        if (_statement.Update != null)
         {
-            var v = Undefined.Instance;
+            var updateRange = _statement.Update.Range;
+            if (updateRange.Start <= nodeRange.Start && nodeRange.End <= updateRange.End)
+            {
+                return true;
+            }
+        }
 
-            if (_shouldCreatePerIterationEnvironment)
+        return false;
+    }
+
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-forbodyevaluation
+    /// </summary>
+    private Completion ForBodyEvaluation(EvaluationContext context)
+    {
+        var v = JsValue.Undefined;
+
+        if (_shouldCreatePerIterationEnvironment && !_canReuseIterationEnvironment)
+        {
+            CreatePerIterationEnvironment(context);
+        }
+
+        var debugHandler = context.DebugMode ? context.Engine.Debugger : null;
+
+        while (true)
+        {
+            context.Engine.ExecutionContext.ClearCompletedAwaitsIfNotResuming();
+
+            if (_test != null)
+            {
+                debugHandler?.OnStep(_test._expression);
+
+                if (!_test.GetBooleanValue(context))
+                {
+                    // Check for async suspension in test expression
+                    if (context.IsSuspended())
+                    {
+                        return new Completion(CompletionType.Return, JsValue.Undefined, ((JintStatement) this)._statement);
+                    }
+
+                    return new Completion(CompletionType.Normal, v, ((JintStatement) this)._statement);
+                }
+            }
+
+            var result = _body.Execute(context);
+            if (!result.Value.IsEmpty)
+            {
+                v = result.Value;
+            }
+
+            // Check for suspension - if suspended, we need to exit the loop
+            var suspendable = context.Engine.ExecutionContext.Suspendable;
+            if (context.IsSuspended())
+            {
+                var suspendedValue = suspendable?.SuspendedValue ?? result.Value;
+                return new Completion(CompletionType.Return, suspendedValue, ((JintStatement) this)._statement);
+            }
+
+            if (result.Type == CompletionType.Break && (context.Target == null || string.Equals(context.Target, _statement?.LabelSet?.Name, StringComparison.Ordinal)))
+            {
+                return new Completion(CompletionType.Normal, result.Value, ((JintStatement) this)._statement);
+            }
+
+            if (result.Type != CompletionType.Continue || (context.Target != null && !string.Equals(context.Target, _statement?.LabelSet?.Name, StringComparison.Ordinal)))
+            {
+                if (result.Type != CompletionType.Normal)
+                {
+                    return result;
+                }
+            }
+
+            if (_shouldCreatePerIterationEnvironment && !_canReuseIterationEnvironment)
             {
                 CreatePerIterationEnvironment(context);
             }
 
-            while (true)
+            if (_increment != null)
             {
-                if (_test != null)
+                debugHandler?.OnStep(_increment._expression);
+                _increment.Evaluate(context);
+
+                // Check for suspension in update expression (e.g., yield in the update)
+                if (context.IsSuspended())
                 {
-                    if (!TypeConverter.ToBoolean(_test.GetValue(context).Value))
-                    {
-                        return NormalCompletion(v);
-                    }
+                    var suspendedValue = suspendable?.SuspendedValue ?? JsValue.Undefined;
+                    return new Completion(CompletionType.Return, suspendedValue, ((JintStatement) this)._statement);
                 }
 
-                var result = _body.Execute(context);
-                if (!ReferenceEquals(result.Value, null))
+                // Check for return request (e.g., generator.return() was called)
+                if (suspendable?.ReturnRequested == true)
                 {
-                    v = result.Value;
+                    var returnValue = suspendable.SuspendedValue ?? JsValue.Undefined;
+                    return new Completion(CompletionType.Return, returnValue, ((JintStatement) this)._statement);
                 }
-
-                if (result.Type == CompletionType.Break && (result.Target == null || result.Target == _statement?.LabelSet?.Name))
-                {
-                    return NormalCompletion(result.Value);
-                }
-
-                if (result.Type != CompletionType.Continue || (result.Target != null && result.Target != _statement?.LabelSet?.Name))
-                {
-                    if (result.Type != CompletionType.Normal)
-                    {
-                        return result;
-                    }
-                }
-
-                if (_shouldCreatePerIterationEnvironment)
-                {
-                    CreatePerIterationEnvironment(context);
-                }
-
-                _increment?.GetValue(context);
             }
         }
+    }
 
-        private void CreatePerIterationEnvironment(EvaluationContext context)
+    /// <summary>
+    /// Checks if any part of the for-loop (init, test, update, body) contains closures
+    /// that could capture the per-iteration environment.
+    /// </summary>
+    private static bool ForLoopMayCapture(ForStatement statement)
+    {
+        // Check init declarators (e.g., for (let i = 0, f = function() { return i }; ...))
+        if (statement.Init is VariableDeclaration vd)
         {
-            if (_boundNames == null || _boundNames.Count == 0)
+            foreach (var decl in vd.Declarations)
             {
-                return;
+                if (decl.Init is not null)
+                {
+                    if (JintFunctionDefinition.EnvironmentEscapeAstVisitor.IsCapturing(decl.Init)
+                        || JintFunctionDefinition.EnvironmentEscapeAstVisitor.MayEscape(decl.Init))
+                    {
+                        return true;
+                    }
+                }
             }
-
-            var engine = context.Engine;
-            var lastIterationEnv = engine.ExecutionContext.LexicalEnvironment;
-            var lastIterationEnvRec = lastIterationEnv;
-            var outer = lastIterationEnv._outerEnv;
-            var thisIterationEnv = JintEnvironment.NewDeclarativeEnvironment(engine, outer);
-
-            for (var j = 0; j < _boundNames.Count; j++)
-            {
-                var bn = _boundNames[j];
-                var lastValue = lastIterationEnvRec.GetBindingValue(bn, true);
-                thisIterationEnv.CreateMutableBindingAndInitialize(bn, false, lastValue);
-            }
-
-            engine.UpdateLexicalEnvironment(thisIterationEnv);
         }
+
+        if (statement.Test is not null
+            && (JintFunctionDefinition.EnvironmentEscapeAstVisitor.IsCapturing(statement.Test)
+                || JintFunctionDefinition.EnvironmentEscapeAstVisitor.MayEscape(statement.Test)))
+        {
+            return true;
+        }
+
+        if (statement.Update is not null
+            && (JintFunctionDefinition.EnvironmentEscapeAstVisitor.IsCapturing(statement.Update)
+                || JintFunctionDefinition.EnvironmentEscapeAstVisitor.MayEscape(statement.Update)))
+        {
+            return true;
+        }
+
+        return JintFunctionDefinition.EnvironmentEscapeAstVisitor.IsCapturing(statement.Body)
+            || JintFunctionDefinition.EnvironmentEscapeAstVisitor.MayEscape(statement.Body);
+    }
+
+    private void CreatePerIterationEnvironment(EvaluationContext context)
+    {
+        var engine = context.Engine;
+        var lastIterationEnv = (DeclarativeEnvironment) engine.ExecutionContext.LexicalEnvironment;
+        var thisIterationEnv = JintEnvironment.NewDeclarativeEnvironment(engine, lastIterationEnv._outerEnv);
+
+        lastIterationEnv.TransferTo(_boundNames!, thisIterationEnv);
+
+        engine.UpdateLexicalEnvironment(thisIterationEnv);
     }
 }

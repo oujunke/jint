@@ -1,797 +1,1062 @@
-using System;
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Numerics;
+using System.Reflection;
 using System.Runtime.CompilerServices;
-using Esprima.Ast;
 using Jint.Extensions;
 using Jint.Native;
-using Jint.Native.Number;
 using Jint.Native.Object;
 using Jint.Runtime.Interop;
 
-namespace Jint.Runtime.Interpreter.Expressions
+namespace Jint.Runtime.Interpreter.Expressions;
+
+internal abstract class JintBinaryExpression : JintExpression
 {
-    internal abstract class JintBinaryExpression : JintExpression
+    private readonly record struct OperatorKey(string? OperatorName, Type Left, Type Right);
+    private static readonly ConcurrentDictionary<OperatorKey, MethodDescriptor> _knownOperators = new();
+
+    private readonly JintExpression _left;
+    private readonly JintExpression _right;
+
+    private JintBinaryExpression(NonLogicalBinaryExpression expression) : base(expression)
     {
-        private readonly record struct OperatorKey(string OperatorName, Type Left, Type Right);
-        private static readonly ConcurrentDictionary<OperatorKey, MethodDescriptor> _knownOperators = new();
+        // TODO check https://tc39.es/ecma262/#sec-applystringornumericbinaryoperator
+        _left = Build(expression.Left);
+        _right = Build(expression.Right);
+    }
 
-        private readonly JintExpression _left;
-        private readonly JintExpression _right;
-
-        private JintBinaryExpression(Engine engine, BinaryExpression expression) : base(expression)
+    /// <summary>
+    /// Evaluates both operands with proper suspension checks for async/generator functions.
+    /// Returns false if evaluation was suspended (caller should return early).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    protected bool TryEvaluateOperands(EvaluationContext context, out JsValue left, out JsValue right)
+    {
+        left = _left.GetValue(context);
+        if (context.IsSuspended())
         {
-            // TODO check https://tc39.es/ecma262/#sec-applystringornumericbinaryoperator
-
-            _left = Build(engine, expression.Left);
-            _right = Build(engine, expression.Right);
-        }
-
-        internal static bool TryOperatorOverloading(
-            EvaluationContext context,
-            JsValue leftValue,
-            JsValue rightValue,
-            string clrName,
-            out object result)
-        {
-            var left = leftValue.ToObject();
-            var right = rightValue.ToObject();
-
-            if (left != null && right != null)
-            {
-                var leftType = left.GetType();
-                var rightType = right.GetType();
-                var arguments = new[] { leftValue, rightValue };
-
-                var key = new OperatorKey(clrName, leftType, rightType);
-                var method = _knownOperators.GetOrAdd(key, _ =>
-                {
-                    var leftMethods = leftType.GetOperatorOverloadMethods();
-                    var rightMethods = rightType.GetOperatorOverloadMethods();
-
-                    var methods = leftMethods.Concat(rightMethods).Where(x => x.Name == clrName && x.GetParameters().Length == 2);
-                    var _methods = MethodDescriptor.Build(methods.ToArray());
-
-                    return TypeConverter.FindBestMatch(context.Engine, _methods, _ => arguments).FirstOrDefault().Method;
-                });
-
-                if (method != null)
-                {
-                    try
-                    {
-                        result = method.Call(context.Engine, null, arguments);
-                        return true;
-                    }
-                    catch
-                    {
-                        result = null;
-                        return false;
-                    }
-                }
-            }
-
-            result = null;
+            right = JsValue.Undefined;
             return false;
         }
 
-        internal static JintExpression Build(Engine engine, BinaryExpression expression)
+        right = _right.GetValue(context);
+        return !context.IsSuspended();
+    }
+
+    private readonly record struct MethodResolverState(JsCallArguments Arguments);
+
+    internal static bool TryOperatorOverloading(
+        EvaluationContext context,
+        JsValue leftValue,
+        JsValue rightValue,
+        string? clrName,
+        [NotNullWhen(true)] out object? result)
+    {
+        var left = leftValue.ToObject();
+        var right = rightValue.ToObject();
+
+        if (left != null && right != null)
         {
-            JintBinaryExpression result = null;
-            switch (expression.Operator)
+            var leftType = left.GetType();
+            var rightType = right.GetType();
+            var arguments = new[] { leftValue, rightValue };
+
+            var key = new OperatorKey(clrName, leftType, rightType);
+            var method = _knownOperators.GetOrAdd(key, _ =>
             {
-                case BinaryOperator.StrictlyEqual:
-                    result = new StrictlyEqualBinaryExpression(engine, expression);
-                    break;
-                case BinaryOperator.StricltyNotEqual:
-                    result = new StrictlyNotEqualBinaryExpression(engine, expression);
-                    break;
-                case BinaryOperator.Less:
-                    result = new LessBinaryExpression(engine, expression);
-                    break;
-                case BinaryOperator.Greater:
-                    result = new GreaterBinaryExpression(engine, expression);
-                    break;
-                case BinaryOperator.Plus:
-                    result = new PlusBinaryExpression(engine, expression);
-                    break;
-                case BinaryOperator.Minus:
-                    result = new MinusBinaryExpression(engine, expression);
-                    break;
-                case BinaryOperator.Times:
-                    result = new TimesBinaryExpression(engine, expression);
-                    break;
-                case BinaryOperator.Divide:
-                    result = new DivideBinaryExpression(engine, expression);
-                    break;
-                case BinaryOperator.Equal:
-                    result = new EqualBinaryExpression(engine, expression);
-                    break;
-                case BinaryOperator.NotEqual:
-                    result = new EqualBinaryExpression(engine, expression, invert: true);
-                    break;
-                case BinaryOperator.GreaterOrEqual:
-                    result = new CompareBinaryExpression(engine, expression, leftFirst: true);
-                    break;
-                case BinaryOperator.LessOrEqual:
-                    result = new CompareBinaryExpression(engine, expression, leftFirst: false);
-                    break;
-                case BinaryOperator.BitwiseAnd:
-                case BinaryOperator.BitwiseOr:
-                case BinaryOperator.BitwiseXOr:
-                case BinaryOperator.LeftShift:
-                case BinaryOperator.RightShift:
-                case BinaryOperator.UnsignedRightShift:
-                    result = new BitwiseBinaryExpression(engine, expression);
-                    break;
-                case BinaryOperator.InstanceOf:
-                    result = new InstanceOfBinaryExpression(engine, expression);
-                    break;
-                case BinaryOperator.Exponentiation:
-                    result = new ExponentiationBinaryExpression(engine, expression);
-                    break;
-                case BinaryOperator.Modulo:
-                    result = new ModuloBinaryExpression(engine, expression);
-                    break;
-                case BinaryOperator.In:
-                    result = new InBinaryExpression(engine, expression);
-                    break;
-                default:
-                    ExceptionHelper.ThrowArgumentOutOfRangeException(nameof(expression.Operator), "cannot handle operator");
-                    break;
+                var leftMethods = leftType.GetOperatorOverloadMethods();
+                var rightMethods = rightType.GetOperatorOverloadMethods();
+
+                var methods = leftMethods.Concat(rightMethods).Where(x => string.Equals(x.Name, clrName, StringComparison.Ordinal) && x.GetParameters().Length == 2);
+                var methodDescriptors = MethodDescriptor.Build(methods.ToArray());
+
+                return InteropHelper.FindBestMatch(context.Engine, methodDescriptors, static (_, state) => state.Arguments, new MethodResolverState(arguments)).FirstOrDefault().Method;
+            });
+
+            if (method != null)
+            {
+                try
+                {
+                    result = method.Call(context.Engine, null, arguments);
+                    return true;
+                }
+                catch (Exception e)
+                {
+                    Throw.MeaningfulException(context.Engine, new TargetInvocationException(e.InnerException));
+                    result = null;
+                    return false;
+                }
+            }
+        }
+
+        result = null;
+        return false;
+    }
+
+    internal static JintExpression Build(NonLogicalBinaryExpression expression)
+    {
+        JintBinaryExpression? result = null;
+        switch (expression.Operator)
+        {
+            case Operator.StrictEquality:
+                result = new StrictlyEqualBinaryExpression(expression);
+                break;
+            case Operator.StrictInequality:
+                result = new StrictlyNotEqualBinaryExpression(expression);
+                break;
+            case Operator.LessThan:
+                result = new LessBinaryExpression(expression);
+                break;
+            case Operator.GreaterThan:
+                result = new GreaterBinaryExpression(expression);
+                break;
+            case Operator.Addition:
+                if (TryBuildStringConcatenation(expression, out var concatExpr))
+                {
+                    return concatExpr;
+                }
+                result = new PlusBinaryExpression(expression);
+                break;
+            case Operator.Subtraction:
+                result = new MinusBinaryExpression(expression);
+                break;
+            case Operator.Multiplication:
+                result = new TimesBinaryExpression(expression);
+                break;
+            case Operator.Division:
+                result = new DivideBinaryExpression(expression);
+                break;
+            case Operator.Equality:
+                result = new EqualBinaryExpression(expression);
+                break;
+            case Operator.Inequality:
+                result = new EqualBinaryExpression(expression, invert: true);
+                break;
+            case Operator.GreaterThanOrEqual:
+                result = new CompareBinaryExpression(expression, leftFirst: true);
+                break;
+            case Operator.LessThanOrEqual:
+                result = new CompareBinaryExpression(expression, leftFirst: false);
+                break;
+            case Operator.BitwiseAnd:
+            case Operator.BitwiseOr:
+            case Operator.BitwiseXor:
+            case Operator.LeftShift:
+            case Operator.RightShift:
+            case Operator.UnsignedRightShift:
+                result = new BitwiseBinaryExpression(expression);
+                break;
+            case Operator.InstanceOf:
+                result = new InstanceOfBinaryExpression(expression);
+                break;
+            case Operator.Exponentiation:
+                result = new ExponentiationBinaryExpression(expression);
+                break;
+            case Operator.Remainder:
+                result = new ModuloBinaryExpression(expression);
+                break;
+            case Operator.In:
+                result = new InBinaryExpression(expression);
+                break;
+            default:
+                Throw.ArgumentOutOfRangeException(nameof(expression.Operator), "cannot handle operator");
+                break;
+        }
+
+        if (expression.Operator != Operator.InstanceOf
+            && expression.Operator != Operator.In
+            && expression.Left is Literal leftLiteral
+            && expression.Right is Literal rightLiteral)
+        {
+            var lval = JintLiteralExpression.ConvertToJsValue(leftLiteral);
+            var rval = JintLiteralExpression.ConvertToJsValue(rightLiteral);
+
+            if (lval is not null && rval is not null)
+            {
+                // we have fixed result
+                try
+                {
+                    var context = new EvaluationContext();
+                    return new JintConstantExpression(expression, (JsValue) result.EvaluateWithoutNodeTracking(context));
+                }
+                catch
+                {
+                    // probably caused an error and error reporting doesn't work without engine
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Detects left-recursive chains of '+' operations that include at least one string literal,
+    /// and flattens them into a single StringConcatenationExpression to avoid intermediate allocations.
+    /// </summary>
+    private static bool TryBuildStringConcatenation(
+        NonLogicalBinaryExpression expression,
+        [NotNullWhen(true)] out JintExpression? result)
+    {
+        result = null;
+
+        // Only optimize chains of 3+ operands (at least 2 nested additions)
+        if (expression.Left is not NonLogicalBinaryExpression { Operator: Operator.Addition })
+        {
+            return false;
+        }
+
+        // Collect all operands by walking the left-recursive chain
+        var operands = new List<Expression>();
+        CollectAdditionOperands(expression, operands);
+
+        // Must have a string literal in the first two operands to guarantee string concatenation semantics
+        // from the very first operation. A string literal at index 2+ is not enough because earlier operands
+        // could be numerically added (e.g., 2.0 + 3.0 + 'm' should yield '5m', not '23m').
+        // The early return above guarantees at least 3 operands, so operands[0] and operands[1] are always valid.
+        if (operands.Count < 2 || (operands[0] is not Literal { Value: string } && operands[1] is not Literal { Value: string }))
+        {
+            return false;
+        }
+
+        result = new StringConcatenationExpression(expression, operands.ToArray());
+        return true;
+    }
+
+    private static void CollectAdditionOperands(Expression expression, List<Expression> operands)
+    {
+        if (expression is NonLogicalBinaryExpression { Operator: Operator.Addition } binary)
+        {
+            CollectAdditionOperands(binary.Left, operands);
+            operands.Add(binary.Right);
+        }
+        else
+        {
+            operands.Add(expression);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static bool AreNonBigIntOperands(JsValue left, JsValue right)
+    {
+        return left._type != InternalTypes.BigInt && right._type != InternalTypes.BigInt;
+    }
+
+    internal static void AssertValidBigIntArithmeticOperands(JsValue left, JsValue right)
+    {
+        if (left.Type != right.Type)
+        {
+            Throw.TypeErrorNoEngine("Cannot mix BigInt and other types, use explicit conversions");
+        }
+    }
+
+    /// <summary>
+    /// Validates that BigInteger.Pow(base, exponent) won't produce an excessively large result.
+    /// Limits result to ~1 million bits (~125 KB) to prevent memory exhaustion.
+    /// </summary>
+    internal static void ValidateBigIntPowSize(Realm realm, BigInteger baseValue, int exponent)
+    {
+        if (exponent > 0)
+        {
+            var absBase = BigInteger.Abs(baseValue);
+            if (absBase > BigInteger.One
+                && (double) exponent * BigInteger.Log(absBase, 2.0) > 1_000_000)
+            {
+                Throw.RangeError(realm, "Maximum BigInt size exceeded");
+            }
+        }
+    }
+
+    private sealed class StrictlyEqualBinaryExpression : JintBinaryExpression
+    {
+        public StrictlyEqualBinaryExpression(NonLogicalBinaryExpression expression) : base(expression)
+        {
+        }
+
+        protected override object EvaluateInternal(EvaluationContext context)
+        {
+            if (!TryEvaluateOperands(context, out var left, out var right))
+            {
+                return JsValue.Undefined;
             }
 
-            if (expression.Operator != BinaryOperator.InstanceOf
-                && expression.Operator != BinaryOperator.In
-                && expression.Left is Literal leftLiteral
-                && expression.Right is Literal rightLiteral)
-            {
-                var lval = JintLiteralExpression.ConvertToJsValue(leftLiteral);
-                var rval = JintLiteralExpression.ConvertToJsValue(rightLiteral);
+            var equal = left == right;
+            return equal ? JsBoolean.True : JsBoolean.False;
+        }
 
-                if (lval is not null && rval is not null)
+        public override bool GetBooleanValue(EvaluationContext context)
+        {
+            if (!TryEvaluateOperands(context, out var left, out var right))
+            {
+                return false;
+            }
+
+            return left == right;
+        }
+    }
+
+    private sealed class StrictlyNotEqualBinaryExpression : JintBinaryExpression
+    {
+        public StrictlyNotEqualBinaryExpression(NonLogicalBinaryExpression expression) : base(expression)
+        {
+        }
+
+        protected override object EvaluateInternal(EvaluationContext context)
+        {
+            if (!TryEvaluateOperands(context, out var left, out var right))
+            {
+                return JsValue.Undefined;
+            }
+
+            return left == right ? JsBoolean.False : JsBoolean.True;
+        }
+
+        public override bool GetBooleanValue(EvaluationContext context)
+        {
+            if (!TryEvaluateOperands(context, out var left, out var right))
+            {
+                return false;
+            }
+
+            return left != right;
+        }
+    }
+
+    private sealed class LessBinaryExpression : JintBinaryExpression
+    {
+        public LessBinaryExpression(NonLogicalBinaryExpression expression) : base(expression)
+        {
+        }
+
+        protected override object EvaluateInternal(EvaluationContext context)
+        {
+            if (!TryEvaluateOperands(context, out var left, out var right))
+            {
+                return JsValue.Undefined;
+            }
+
+            if (context.OperatorOverloadingAllowed
+                && TryOperatorOverloading(context, left, right, "op_LessThan", out var opResult))
+            {
+                return JsValue.FromObject(context.Engine, opResult);
+            }
+
+            var value = Compare(left, right);
+
+            return value._type == InternalTypes.Undefined ? JsBoolean.False : value;
+        }
+
+        public override bool GetBooleanValue(EvaluationContext context)
+        {
+            if (!TryEvaluateOperands(context, out var left, out var right))
+            {
+                return false;
+            }
+
+            if (context.OperatorOverloadingAllowed
+                && TryOperatorOverloading(context, left, right, "op_LessThan", out var opResult))
+            {
+                return TypeConverter.ToBoolean(JsValue.FromObject(context.Engine, opResult));
+            }
+
+            var value = Compare(left, right);
+            return value._type != InternalTypes.Undefined && ((JsBoolean) value)._value;
+        }
+    }
+
+    private sealed class GreaterBinaryExpression : JintBinaryExpression
+    {
+        public GreaterBinaryExpression(NonLogicalBinaryExpression expression) : base(expression)
+        {
+        }
+
+        protected override object EvaluateInternal(EvaluationContext context)
+        {
+            if (!TryEvaluateOperands(context, out var left, out var right))
+            {
+                return JsValue.Undefined;
+            }
+
+            if (context.OperatorOverloadingAllowed
+                && TryOperatorOverloading(context, left, right, "op_GreaterThan", out var opResult))
+            {
+                return JsValue.FromObject(context.Engine, opResult);
+            }
+
+            var value = Compare(right, left, false);
+
+            return value._type == InternalTypes.Undefined ? JsBoolean.False : value;
+        }
+
+        public override bool GetBooleanValue(EvaluationContext context)
+        {
+            if (!TryEvaluateOperands(context, out var left, out var right))
+            {
+                return false;
+            }
+
+            if (context.OperatorOverloadingAllowed
+                && TryOperatorOverloading(context, left, right, "op_GreaterThan", out var opResult))
+            {
+                return TypeConverter.ToBoolean(JsValue.FromObject(context.Engine, opResult));
+            }
+
+            var value = Compare(right, left, false);
+            return value._type != InternalTypes.Undefined && ((JsBoolean) value)._value;
+        }
+    }
+
+    private sealed class PlusBinaryExpression : JintBinaryExpression
+    {
+        public PlusBinaryExpression(NonLogicalBinaryExpression expression) : base(expression)
+        {
+        }
+
+        protected override object EvaluateInternal(EvaluationContext context)
+        {
+            if (!TryEvaluateOperands(context, out var left, out var right))
+            {
+                return JsValue.Undefined;
+            }
+
+            if (context.OperatorOverloadingAllowed
+                && TryOperatorOverloading(context, left, right, "op_Addition", out var opResult))
+            {
+                return JsValue.FromObject(context.Engine, opResult);
+            }
+
+            if (AreIntegerOperands(left, right))
+            {
+                return JsNumber.Create((long) left.AsInteger() + right.AsInteger());
+            }
+
+            if (left._type == InternalTypes.Number && right._type == InternalTypes.Number)
+            {
+                return JsNumber.Create(((JsNumber) left)._value + ((JsNumber) right)._value);
+            }
+
+            var lprim = TypeConverter.ToPrimitive(left);
+            var rprim = TypeConverter.ToPrimitive(right);
+            JsValue result;
+            if (lprim.IsString() || rprim.IsString())
+            {
+                result = JsString.Create(TypeConverter.ToString(lprim) + TypeConverter.ToString(rprim));
+            }
+            else if (AreNonBigIntOperands(left, right))
+            {
+                result = JsNumber.Create(TypeConverter.ToNumber(lprim) + TypeConverter.ToNumber(rprim));
+            }
+            else
+            {
+                AssertValidBigIntArithmeticOperands(lprim, rprim);
+                result = JsBigInt.Create(TypeConverter.ToBigInt(lprim) + TypeConverter.ToBigInt(rprim));
+            }
+
+            return result;
+        }
+    }
+
+    /// <summary>
+    /// Optimized expression for chains of string concatenation (e.g., a + b + c + d).
+    /// Evaluates all operands and concatenates in a single pass using a ValueStringBuilder,
+    /// avoiding intermediate JsString allocations.
+    /// </summary>
+    private sealed class StringConcatenationExpression : JintExpression
+    {
+        private readonly Expression[] _operandExpressions;
+        private JintExpression[]? _operands;
+
+        public StringConcatenationExpression(Expression expression, Expression[] operandExpressions)
+            : base(expression)
+        {
+            _operandExpressions = operandExpressions;
+        }
+
+        private void EnsureInitialized()
+        {
+            if (_operands is not null)
+            {
+                return;
+            }
+
+            _operands = new JintExpression[_operandExpressions.Length];
+            for (var i = 0; i < _operandExpressions.Length; i++)
+            {
+                _operands[i] = Build(_operandExpressions[i]);
+            }
+        }
+
+        protected override object EvaluateInternal(EvaluationContext context)
+        {
+            EnsureInitialized();
+
+            var operands = _operands!;
+            var count = operands.Length;
+
+            // Fast path for small chains — use string.Concat overloads
+            if (count == 3)
+            {
+                var v0 = operands[0].GetValue(context);
+                if (context.IsSuspended()) return JsValue.Undefined;
+                var v1 = operands[1].GetValue(context);
+                if (context.IsSuspended()) return JsValue.Undefined;
+                var v2 = operands[2].GetValue(context);
+                if (context.IsSuspended()) return JsValue.Undefined;
+
+                return JsString.Create(string.Concat(
+                    TypeConverter.ToString(TypeConverter.ToPrimitive(v0)),
+                    TypeConverter.ToString(TypeConverter.ToPrimitive(v1)),
+                    TypeConverter.ToString(TypeConverter.ToPrimitive(v2))));
+            }
+
+            if (count == 4)
+            {
+                var v0 = operands[0].GetValue(context);
+                if (context.IsSuspended()) return JsValue.Undefined;
+                var v1 = operands[1].GetValue(context);
+                if (context.IsSuspended()) return JsValue.Undefined;
+                var v2 = operands[2].GetValue(context);
+                if (context.IsSuspended()) return JsValue.Undefined;
+                var v3 = operands[3].GetValue(context);
+                if (context.IsSuspended()) return JsValue.Undefined;
+
+                return JsString.Create(string.Concat(
+                    TypeConverter.ToString(TypeConverter.ToPrimitive(v0)),
+                    TypeConverter.ToString(TypeConverter.ToPrimitive(v1)),
+                    TypeConverter.ToString(TypeConverter.ToPrimitive(v2)),
+                    TypeConverter.ToString(TypeConverter.ToPrimitive(v3))));
+            }
+
+            // General path for 5+ operands
+            var strings = new string[count];
+            for (var i = 0; i < count; i++)
+            {
+                var val = operands[i].GetValue(context);
+                if (context.IsSuspended()) return JsValue.Undefined;
+                strings[i] = TypeConverter.ToString(TypeConverter.ToPrimitive(val));
+            }
+
+            return JsString.Create(string.Concat(strings));
+        }
+    }
+
+    private sealed class MinusBinaryExpression : JintBinaryExpression
+    {
+        public MinusBinaryExpression(NonLogicalBinaryExpression expression) : base(expression)
+        {
+        }
+
+        protected override object EvaluateInternal(EvaluationContext context)
+        {
+            if (!TryEvaluateOperands(context, out var left, out var right))
+            {
+                return JsValue.Undefined;
+            }
+
+            if (context.OperatorOverloadingAllowed
+                && TryOperatorOverloading(context, left, right, "op_Subtraction", out var opResult))
+            {
+                return JsValue.FromObject(context.Engine, opResult);
+            }
+
+            if (AreIntegerOperands(left, right))
+            {
+                return JsNumber.Create((long) left.AsInteger() - right.AsInteger());
+            }
+
+            if (left._type == InternalTypes.Number && right._type == InternalTypes.Number)
+            {
+                return JsNumber.Create(((JsNumber) left)._value - ((JsNumber) right)._value);
+            }
+
+            left = TypeConverter.ToNumeric(left);
+            right = TypeConverter.ToNumeric(right);
+
+            JsValue number;
+            if (AreNonBigIntOperands(left, right))
+            {
+                number = JsNumber.Create(left.AsNumber() - right.AsNumber());
+            }
+            else
+            {
+                JintBinaryExpression.AssertValidBigIntArithmeticOperands(left, right);
+                number = JsBigInt.Create(TypeConverter.ToBigInt(left) - TypeConverter.ToBigInt(right));
+            }
+
+            return number;
+        }
+    }
+
+    private sealed class TimesBinaryExpression : JintBinaryExpression
+    {
+        public TimesBinaryExpression(NonLogicalBinaryExpression expression) : base(expression)
+        {
+        }
+
+        protected override object EvaluateInternal(EvaluationContext context)
+        {
+            if (!TryEvaluateOperands(context, out var left, out var right))
+            {
+                return JsValue.Undefined;
+            }
+
+            JsValue result;
+            if (context.OperatorOverloadingAllowed
+                && TryOperatorOverloading(context, left, right, "op_Multiply", out var opResult))
+            {
+                result = JsValue.FromObject(context.Engine, opResult);
+            }
+            else if (AreIntegerOperands(left, right))
+            {
+                result = JsNumber.Create((long) left.AsInteger() * right.AsInteger());
+            }
+            else if (left._type == InternalTypes.Number && right._type == InternalTypes.Number)
+            {
+                result = JsNumber.Create(((JsNumber) left)._value * ((JsNumber) right)._value);
+            }
+            else
+            {
+                var leftNumeric = TypeConverter.ToNumeric(left);
+                var rightNumeric = TypeConverter.ToNumeric(right);
+
+                if (leftNumeric.IsNumber() && rightNumeric.IsNumber())
                 {
-                    // we have fixed result
-                    var context = new EvaluationContext(engine);
-                    return new JintConstantExpression(expression, result.GetValue(context).Value);
+                    result = JsNumber.Create(leftNumeric.AsNumber() * rightNumeric.AsNumber());
+                }
+                else
+                {
+                    AssertValidBigIntArithmeticOperands(leftNumeric, rightNumeric);
+                    result = JsBigInt.Create(leftNumeric.AsBigInt() * rightNumeric.AsBigInt());
                 }
             }
 
             return result;
         }
+    }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal static bool AreNonBigIntOperands(JsValue left, JsValue right)
+    private sealed class DivideBinaryExpression : JintBinaryExpression
+    {
+        public DivideBinaryExpression(NonLogicalBinaryExpression expression) : base(expression)
         {
-            return left._type != InternalTypes.BigInt && right._type != InternalTypes.BigInt;
         }
 
-        internal static void AssertValidBigIntArithmeticOperands(EvaluationContext context, JsValue left, JsValue right)
+        protected override object EvaluateInternal(EvaluationContext context)
         {
-            if (left.Type != right.Type)
+            if (!TryEvaluateOperands(context, out var left, out var right))
             {
-                ExceptionHelper.ThrowTypeError(context.Engine.Realm, "Cannot mix BigInt and other types, use explicit conversions");
+                return JsValue.Undefined;
             }
+
+            if (context.OperatorOverloadingAllowed
+                && TryOperatorOverloading(context, left, right, "op_Division", out var opResult))
+            {
+                return JsValue.FromObject(context.Engine, opResult);
+            }
+
+            if (left._type == InternalTypes.Number && right._type == InternalTypes.Number)
+            {
+                return JsNumber.Create(((JsNumber) left)._value / ((JsNumber) right)._value);
+            }
+
+            left = TypeConverter.ToNumeric(left);
+            right = TypeConverter.ToNumeric(right);
+            return Divide(context, left, right);
+        }
+    }
+
+    private sealed class EqualBinaryExpression : JintBinaryExpression
+    {
+        private readonly bool _invert;
+
+        public EqualBinaryExpression(NonLogicalBinaryExpression expression, bool invert = false) : base(expression)
+        {
+            _invert = invert;
         }
 
-        private sealed class StrictlyEqualBinaryExpression : JintBinaryExpression
+        protected override object EvaluateInternal(EvaluationContext context)
         {
-            public StrictlyEqualBinaryExpression(Engine engine, BinaryExpression expression) : base(engine, expression)
+            if (!TryEvaluateOperands(context, out var left, out var right))
             {
+                return JsValue.Undefined;
             }
 
-            protected override ExpressionResult EvaluateInternal(EvaluationContext context)
+            if (context.OperatorOverloadingAllowed
+                && TryOperatorOverloading(context, left, right, _invert ? "op_Inequality" : "op_Equality", out var opResult))
             {
-                var left = _left.GetValue(context).Value;
-                var right = _right.GetValue(context).Value;
-                var equal = left == right;
-                return NormalCompletion(equal ? JsBoolean.True : JsBoolean.False);
+                return JsValue.FromObject(context.Engine, opResult);
             }
+
+            // if types match, we can take faster strict equality
+            var equality = left.Type == right.Type
+                ? left.Equals(right)
+                : left.IsLooselyEqual(right);
+
+            return equality == !_invert ? JsBoolean.True : JsBoolean.False;
         }
 
-        private sealed class StrictlyNotEqualBinaryExpression : JintBinaryExpression
+        public override bool GetBooleanValue(EvaluationContext context)
         {
-            public StrictlyNotEqualBinaryExpression(Engine engine, BinaryExpression expression) : base(engine, expression)
+            if (!TryEvaluateOperands(context, out var left, out var right))
             {
+                return false;
             }
 
-            protected override ExpressionResult EvaluateInternal(EvaluationContext context)
+            if (context.OperatorOverloadingAllowed
+                && TryOperatorOverloading(context, left, right, _invert ? "op_Inequality" : "op_Equality", out var opResult))
             {
-                var left = _left.GetValue(context).Value;
-                var right = _right.GetValue(context).Value;
-                return NormalCompletion(left == right ? JsBoolean.False : JsBoolean.True);
+                return TypeConverter.ToBoolean(JsValue.FromObject(context.Engine, opResult));
             }
+
+            var equality = left.Type == right.Type
+                ? left.Equals(right)
+                : left.IsLooselyEqual(right);
+
+            return _invert ? !equality : equality;
+        }
+    }
+
+    private sealed class CompareBinaryExpression : JintBinaryExpression
+    {
+        private readonly bool _leftFirst;
+
+        public CompareBinaryExpression(NonLogicalBinaryExpression expression, bool leftFirst) : base(expression)
+        {
+            _leftFirst = leftFirst;
         }
 
-        private sealed class LessBinaryExpression : JintBinaryExpression
+        protected override object EvaluateInternal(EvaluationContext context)
         {
-            public LessBinaryExpression(Engine engine, BinaryExpression expression) : base(engine, expression)
+            if (!TryEvaluateOperands(context, out var leftValue, out var rightValue))
             {
+                return JsValue.Undefined;
             }
 
-            protected override ExpressionResult EvaluateInternal(EvaluationContext context)
+            if (context.OperatorOverloadingAllowed
+                && TryOperatorOverloading(context, leftValue, rightValue, _leftFirst ? "op_GreaterThanOrEqual" : "op_LessThanOrEqual", out var opResult))
             {
-                var left = _left.GetValue(context).Value;
-                var right = _right.GetValue(context).Value;
-
-                if (context.OperatorOverloadingAllowed
-                    && TryOperatorOverloading(context, left, right, "op_LessThan", out var opResult))
-                {
-                    return NormalCompletion(JsValue.FromObject(context.Engine, opResult));
-                }
-
-                var value = Compare(left, right);
-
-                return NormalCompletion(value._type == InternalTypes.Undefined ? JsBoolean.False : value);
+                return JsValue.FromObject(context.Engine, opResult);
             }
+
+            var left = _leftFirst ? leftValue : rightValue;
+            var right = _leftFirst ? rightValue : leftValue;
+
+            var value = Compare(left, right, _leftFirst);
+            return value.IsUndefined() || ((JsBoolean) value)._value ? JsBoolean.False : JsBoolean.True;
         }
 
-        private sealed class GreaterBinaryExpression : JintBinaryExpression
+        public override bool GetBooleanValue(EvaluationContext context)
         {
-            public GreaterBinaryExpression(Engine engine, BinaryExpression expression) : base(engine, expression)
+            if (!TryEvaluateOperands(context, out var leftValue, out var rightValue))
             {
+                return false;
             }
 
-            protected override ExpressionResult EvaluateInternal(EvaluationContext context)
+            if (context.OperatorOverloadingAllowed
+                && TryOperatorOverloading(context, leftValue, rightValue, _leftFirst ? "op_GreaterThanOrEqual" : "op_LessThanOrEqual", out var opResult))
             {
-                var left = _left.GetValue(context).Value;
-                var right = _right.GetValue(context).Value;
-
-                if (context.OperatorOverloadingAllowed
-                    && TryOperatorOverloading(context, left, right, "op_GreaterThan", out var opResult))
-                {
-                    return NormalCompletion(JsValue.FromObject(context.Engine, opResult));
-                }
-
-                var value = Compare(right, left, false);
-
-                return NormalCompletion(value._type == InternalTypes.Undefined ? JsBoolean.False : value);
+                return TypeConverter.ToBoolean(JsValue.FromObject(context.Engine, opResult));
             }
+
+            var left = _leftFirst ? leftValue : rightValue;
+            var right = _leftFirst ? rightValue : leftValue;
+
+            var value = Compare(left, right, _leftFirst);
+            return !value.IsUndefined() && !((JsBoolean) value)._value;
+        }
+    }
+
+    private sealed class InstanceOfBinaryExpression : JintBinaryExpression
+    {
+        public InstanceOfBinaryExpression(NonLogicalBinaryExpression expression) : base(expression)
+        {
         }
 
-        private sealed class PlusBinaryExpression : JintBinaryExpression
+        protected override object EvaluateInternal(EvaluationContext context)
         {
-            public PlusBinaryExpression(Engine engine, BinaryExpression expression) : base(engine, expression)
+            if (!TryEvaluateOperands(context, out var leftValue, out var rightValue))
             {
+                return JsValue.Undefined;
             }
 
-            protected override ExpressionResult EvaluateInternal(EvaluationContext context)
-            {
-                var left = _left.GetValue(context).Value;
-                var right = _right.GetValue(context).Value;
+            return leftValue.InstanceofOperator(rightValue) ? JsBoolean.True : JsBoolean.False;
+        }
+    }
 
-                if (context.OperatorOverloadingAllowed
-                    && TryOperatorOverloading(context, left, right, "op_Addition", out var opResult))
-                {
-                    return NormalCompletion(JsValue.FromObject(context.Engine, opResult));
-                }
-
-                if (AreIntegerOperands(left, right))
-                {
-                    return NormalCompletion(JsNumber.Create((long)left.AsInteger() + right.AsInteger()));
-                }
-
-                var lprim = TypeConverter.ToPrimitive(left);
-                var rprim = TypeConverter.ToPrimitive(right);
-                JsValue result;
-                if (lprim.IsString() || rprim.IsString())
-                {
-                    result = JsString.Create(TypeConverter.ToString(lprim) + TypeConverter.ToString(rprim));
-                }
-                else if (AreNonBigIntOperands(left,right))
-                {
-                    result = JsNumber.Create(TypeConverter.ToNumber(lprim) + TypeConverter.ToNumber(rprim));
-                }
-                else
-                {
-                    AssertValidBigIntArithmeticOperands(context, lprim, rprim);
-                    result = JsBigInt.Create(TypeConverter.ToBigInt(lprim) + TypeConverter.ToBigInt(rprim));
-                }
-
-                return NormalCompletion(result);
-            }
+    private sealed class ExponentiationBinaryExpression : JintBinaryExpression
+    {
+        public ExponentiationBinaryExpression(NonLogicalBinaryExpression expression) : base(expression)
+        {
         }
 
-        private sealed class MinusBinaryExpression : JintBinaryExpression
+        protected override object EvaluateInternal(EvaluationContext context)
         {
-            public MinusBinaryExpression(Engine engine, BinaryExpression expression) : base(engine, expression)
+            if (!TryEvaluateOperands(context, out var leftReference, out var rightReference))
             {
+                return JsValue.Undefined;
             }
 
-            protected override ExpressionResult EvaluateInternal(EvaluationContext context)
+            var left = TypeConverter.ToNumeric(leftReference);
+            var right = TypeConverter.ToNumeric(rightReference);
+
+            JsValue result;
+            if (AreNonBigIntOperands(left, right))
             {
-                var left = _left.GetValue(context).Value;
-                var right = _right.GetValue(context).Value;
+                // validation
+                var baseNumber = (JsNumber) left;
+                var exponentNumber = (JsNumber) right;
 
-                if (context.OperatorOverloadingAllowed
-                    && TryOperatorOverloading(context, left, right, "op_Subtraction", out var opResult))
+                if (exponentNumber.IsNaN())
                 {
-                    return NormalCompletion(JsValue.FromObject(context.Engine, opResult));
+                    return JsNumber.DoubleNaN;
                 }
 
-                JsValue number;
-                left = TypeConverter.ToNumeric(left);
-                right = TypeConverter.ToNumeric(right);
-
-                if (AreIntegerOperands(left, right))
+                if (exponentNumber.IsZero())
                 {
-                    number = JsNumber.Create((long)left.AsInteger() - right.AsInteger());
-                }
-                else if (AreNonBigIntOperands(left, right))
-                {
-                    number = JsNumber.Create(left.AsNumber() - right.AsNumber());
-                }
-                else
-                {
-                    number = JsBigInt.Create(TypeConverter.ToBigInt(left) - TypeConverter.ToBigInt(right));
+                    return JsNumber.PositiveOne;
                 }
 
-                return NormalCompletion(number);
+                if (baseNumber.IsNaN())
+                {
+                    return JsNumber.DoubleNaN;
+                }
+
+                var exponentValue = exponentNumber._value;
+                if (baseNumber.IsPositiveInfinity())
+                {
+                    return exponentValue > 0 ? JsNumber.DoublePositiveInfinity : JsNumber.PositiveZero;
+                }
+
+                static bool IsOddIntegral(double value) => TypeConverter.IsIntegralNumber(value) && value % 2 != 0;
+
+                if (baseNumber.IsNegativeInfinity())
+                {
+                    if (exponentValue > 0)
+                    {
+                        return IsOddIntegral(exponentValue) ? JsNumber.DoubleNegativeInfinity : JsNumber.DoublePositiveInfinity;
+                    }
+
+                    return IsOddIntegral(exponentValue) ? JsNumber.NegativeZero : JsNumber.PositiveZero;
+                }
+
+                if (baseNumber.IsPositiveZero())
+                {
+                    return exponentValue > 0 ? JsNumber.PositiveZero : JsNumber.DoublePositiveInfinity;
+                }
+
+                if (baseNumber.IsNegativeZero())
+                {
+                    if (exponentValue > 0)
+                    {
+                        return IsOddIntegral(exponentValue) ? JsNumber.NegativeZero : JsNumber.PositiveZero;
+                    }
+                    return IsOddIntegral(exponentValue) ? JsNumber.DoubleNegativeInfinity : JsNumber.DoublePositiveInfinity;
+                }
+
+                var baseValue = baseNumber._value;
+                if (exponentNumber.IsPositiveInfinity())
+                {
+                    var absBase = Math.Abs(baseValue);
+                    if (absBase > 1)
+                    {
+                        return JsNumber.DoublePositiveInfinity;
+                    }
+                    if (absBase == 1)
+                    {
+                        return JsNumber.DoubleNaN;
+                    }
+
+                    return JsNumber.PositiveZero;
+                }
+
+                if (exponentNumber.IsNegativeInfinity())
+                {
+                    var absBase = Math.Abs(baseValue);
+                    if (absBase > 1)
+                    {
+                        return JsNumber.PositiveZero;
+                    }
+                    if (absBase == 1)
+                    {
+                        return JsNumber.DoubleNaN;
+                    }
+
+                    return JsNumber.DoublePositiveInfinity;
+                }
+
+                if (baseValue < 0 && !TypeConverter.IsIntegralNumber(exponentValue))
+                {
+                    return JsNumber.DoubleNaN;
+                }
+
+                result = JsNumber.Create(Math.Pow(baseNumber._value, exponentValue));
             }
+            else
+            {
+                AssertValidBigIntArithmeticOperands(left, right);
+
+                var exponent = right.AsBigInt();
+                if (exponent < 0)
+                {
+                    Throw.RangeError(context.Engine.Realm, "Exponent must be positive");
+                }
+
+                if (exponent > int.MaxValue)
+                {
+                    Throw.RangeError(context.Engine.Realm, "Maximum BigInt size exceeded");
+                }
+
+                var intExponent = (int) exponent;
+                var baseValue = left.AsBigInt();
+                ValidateBigIntPowSize(context.Engine.Realm, baseValue, intExponent);
+                result = JsBigInt.Create(BigInteger.Pow(baseValue, intExponent));
+            }
+
+            return result;
+        }
+    }
+
+    private sealed class InBinaryExpression : JintBinaryExpression
+    {
+        public InBinaryExpression(NonLogicalBinaryExpression expression) : base(expression)
+        {
         }
 
-        private sealed class TimesBinaryExpression : JintBinaryExpression
+        protected override object EvaluateInternal(EvaluationContext context)
         {
-            public TimesBinaryExpression(Engine engine, BinaryExpression expression) : base(engine, expression)
+            if (!TryEvaluateOperands(context, out var left, out var right))
             {
+                return JsValue.Undefined;
             }
 
-            protected override ExpressionResult EvaluateInternal(EvaluationContext context)
+            var oi = right as ObjectInstance;
+            if (oi is null)
             {
-                var left = _left.GetValue(context).Value;
-                var right = _right.GetValue(context).Value;
-
-                JsValue result;
-                if (context.OperatorOverloadingAllowed
-                    && TryOperatorOverloading(context, left, right, "op_Multiply", out var opResult))
-                {
-                    result = JsValue.FromObject(context.Engine, opResult);
-                }
-                else if (AreIntegerOperands(left, right))
-                {
-                    result = JsNumber.Create((long) left.AsInteger() * right.AsInteger());
-                }
-                else
-                {
-                    var leftNumeric = TypeConverter.ToNumeric(left);
-                    var rightNumeric = TypeConverter.ToNumeric(right);
-
-                    if (leftNumeric.IsNumber() && rightNumeric.IsNumber())
-                    {
-                        result = JsNumber.Create(leftNumeric.AsNumber() * rightNumeric.AsNumber());
-                    }
-                    else
-                    {
-                        AssertValidBigIntArithmeticOperands(context, leftNumeric, rightNumeric);
-                        result = JsBigInt.Create(leftNumeric.AsBigInt() * rightNumeric.AsBigInt());
-                    }
-                }
-
-                return NormalCompletion(result);
+                Throw.TypeError(context.Engine.Realm, $"Cannot use 'in' operator to search for '{left}' in {right}");
             }
+
+            if (left.IsPrivateName())
+            {
+                var privateEnv = context.Engine.ExecutionContext.PrivateEnvironment!;
+                var privateName = privateEnv.ResolvePrivateIdentifier(((PrivateName) left).ToString());
+                return privateName is not null && oi.PrivateElementFind(privateName) is not null ? JsBoolean.True : JsBoolean.False;
+            }
+
+            return oi.HasProperty(left) ? JsBoolean.True : JsBoolean.False;
+        }
+    }
+
+    private sealed class ModuloBinaryExpression : JintBinaryExpression
+    {
+        public ModuloBinaryExpression(NonLogicalBinaryExpression expression) : base(expression)
+        {
         }
 
-        private sealed class DivideBinaryExpression : JintBinaryExpression
+        protected override object EvaluateInternal(EvaluationContext context)
         {
-            public DivideBinaryExpression(Engine engine, BinaryExpression expression) : base(engine, expression)
+            if (!TryEvaluateOperands(context, out var left, out var right))
             {
+                return JsValue.Undefined;
             }
 
-            protected override ExpressionResult EvaluateInternal(EvaluationContext context)
+            if (context.OperatorOverloadingAllowed
+                && TryOperatorOverloading(context, left, right, "op_Modulus", out var opResult))
             {
-                var left = _left.GetValue(context).Value;
-                var right = _right.GetValue(context).Value;
-
-                if (context.OperatorOverloadingAllowed
-                    && TryOperatorOverloading(context, left, right, "op_Division", out var opResult))
-                {
-                    return NormalCompletion(JsValue.FromObject(context.Engine, opResult));
-                }
-
-                left = TypeConverter.ToNumeric(left);
-                right = TypeConverter.ToNumeric(right);
-                return NormalCompletion(Divide(context, left, right));
+                return JsValue.FromObject(context.Engine, opResult);
             }
+
+            return Remainder(context, left, right);
         }
+    }
 
-        private sealed class EqualBinaryExpression : JintBinaryExpression
+    private sealed class BitwiseBinaryExpression : JintBinaryExpression
+    {
+        private string? OperatorClrName
         {
-            private readonly bool _invert;
-
-            public EqualBinaryExpression(Engine engine, BinaryExpression expression, bool invert = false) : base(engine, expression)
+            get
             {
-                _invert = invert;
-            }
-
-            protected override ExpressionResult EvaluateInternal(EvaluationContext context)
-            {
-                var left = _left.GetValue(context).Value;
-                var right = _right.GetValue(context).Value;
-
-                if (context.OperatorOverloadingAllowed
-                    && TryOperatorOverloading(context, left, right, _invert ? "op_Inequality" : "op_Equality", out var opResult))
+                return _operator switch
                 {
-                    return NormalCompletion(JsValue.FromObject(context.Engine, opResult));
-                }
-
-                // if types match, we can take faster strict equality
-                var equality = left.Type == right.Type
-                    ? left.Equals(right)
-                    : left.IsLooselyEqual(right);
-
-                return NormalCompletion(equality == !_invert ? JsBoolean.True : JsBoolean.False);
-            }
-        }
-
-        private sealed class CompareBinaryExpression : JintBinaryExpression
-        {
-            private readonly bool _leftFirst;
-
-            public CompareBinaryExpression(Engine engine, BinaryExpression expression, bool leftFirst) : base(engine, expression)
-            {
-                _leftFirst = leftFirst;
-            }
-
-            protected override ExpressionResult EvaluateInternal(EvaluationContext context)
-            {
-                var leftValue = _left.GetValue(context).Value;
-                var rightValue = _right.GetValue(context).Value;
-
-                if (context.OperatorOverloadingAllowed
-                    && TryOperatorOverloading(context, leftValue, rightValue, _leftFirst ? "op_GreaterThanOrEqual" : "op_LessThanOrEqual", out var opResult))
-                {
-                    return NormalCompletion(JsValue.FromObject(context.Engine, opResult));
-                }
-
-                var left = _leftFirst ? leftValue : rightValue;
-                var right = _leftFirst ? rightValue : leftValue;
-
-                var value = Compare(left, right, _leftFirst);
-                return NormalCompletion(value.IsUndefined() || ((JsBoolean) value)._value ? JsBoolean.False : JsBoolean.True);
-            }
-        }
-
-        private sealed class InstanceOfBinaryExpression : JintBinaryExpression
-        {
-            public InstanceOfBinaryExpression(Engine engine, BinaryExpression expression) : base(engine, expression)
-            {
-            }
-
-            protected override ExpressionResult EvaluateInternal(EvaluationContext context)
-            {
-                var leftValue = _left.GetValue(context).Value;
-                var rightValue = _right.GetValue(context).Value;
-                return NormalCompletion(leftValue.InstanceofOperator(rightValue) ? JsBoolean.True : JsBoolean.False);
-            }
-        }
-
-        private sealed class ExponentiationBinaryExpression : JintBinaryExpression
-        {
-            public ExponentiationBinaryExpression(Engine engine, BinaryExpression expression) : base(engine, expression)
-            {
-            }
-
-            protected override ExpressionResult EvaluateInternal(EvaluationContext context)
-            {
-                var leftReference = _left.GetValue(context).Value;
-                var rightReference = _right.GetValue(context).Value;
-
-                var left = TypeConverter.ToNumeric(leftReference);
-                var right = TypeConverter.ToNumeric(rightReference);
-
-                JsValue result;
-                if (AreNonBigIntOperands(left,right))
-                {
-                    // validation
-                    var baseNumber = (JsNumber) left;
-                    var exponentNumber = (JsNumber) right;
-
-                    if (exponentNumber.IsNaN())
-                    {
-                        return NormalCompletion(JsNumber.DoubleNaN);
-                    }
-
-                    if (exponentNumber.IsZero())
-                    {
-                        return NormalCompletion(JsNumber.PositiveOne);
-                    }
-
-                    if (baseNumber.IsNaN())
-                    {
-                        return NormalCompletion(JsNumber.DoubleNaN);
-                    }
-
-                    var exponentValue = exponentNumber._value;
-                    if (baseNumber.IsPositiveInfinity())
-                    {
-                        return NormalCompletion(exponentValue > 0 ? JsNumber.DoublePositiveInfinity : JsNumber.PositiveZero);
-                    }
-
-                    static bool IsOddIntegral(double value) => TypeConverter.IsIntegralNumber(value) && value % 2 != 0;
-
-                    if (baseNumber.IsNegativeInfinity())
-                    {
-                        if (exponentValue > 0)
-                        {
-                            return NormalCompletion(IsOddIntegral(exponentValue) ? JsNumber.DoubleNegativeInfinity : JsNumber.DoublePositiveInfinity);
-                        }
-
-                        return NormalCompletion(IsOddIntegral(exponentValue) ? JsNumber.NegativeZero : JsNumber.PositiveZero);
-                    }
-
-                    if (baseNumber.IsPositiveZero())
-                    {
-                        return NormalCompletion(exponentValue > 0 ? JsNumber.PositiveZero : JsNumber.DoublePositiveInfinity);
-                    }
-
-                    if (baseNumber.IsNegativeZero())
-                    {
-                        if (exponentValue > 0)
-                        {
-                            return NormalCompletion(IsOddIntegral(exponentValue) ? JsNumber.NegativeZero : JsNumber.PositiveZero);
-                        }
-                        return NormalCompletion(IsOddIntegral(exponentValue) ? JsNumber.DoubleNegativeInfinity : JsNumber.DoublePositiveInfinity);
-                    }
-
-                    var baseValue = baseNumber._value;
-                    if (exponentNumber.IsPositiveInfinity())
-                    {
-                        if (Math.Abs(baseValue) > 1)
-                        {
-                            return NormalCompletion(JsNumber.DoublePositiveInfinity);
-                        }
-                        if (Math.Abs(baseValue) == 1)
-                        {
-                            return NormalCompletion(JsNumber.DoubleNaN);
-                        }
-
-                        return NormalCompletion(JsNumber.PositiveZero);
-                    }
-
-                    if (exponentNumber.IsNegativeInfinity())
-                    {
-                        if (Math.Abs(baseValue) > 1)
-                        {
-                            return NormalCompletion(JsNumber.PositiveZero);
-                        }
-                        if (Math.Abs(baseValue) == 1)
-                        {
-                            return NormalCompletion(JsNumber.DoubleNaN);
-                        }
-
-                        return NormalCompletion(JsNumber.DoublePositiveInfinity);
-                    }
-
-                    if (baseValue < 0 && !TypeConverter.IsIntegralNumber(exponentValue))
-                    {
-                        return NormalCompletion(JsNumber.DoubleNaN);
-                    }
-
-                    result = JsNumber.Create(Math.Pow(baseNumber._value, exponentValue));
-                }
-                else
-                {
-                    AssertValidBigIntArithmeticOperands(context, left, right);
-
-                    var exponent = right.AsBigInt();
-                    if (exponent < 0)
-                    {
-                        ExceptionHelper.ThrowRangeError(context.Engine.Realm, "Exponent must be positive");
-                    }
-
-                    if (exponent > int.MaxValue || exponent < int.MinValue)
-                    {
-                        ExceptionHelper.ThrowTypeError(context.Engine.Realm, "Exponent does not fit 32bit range");
-                    }
-                    result = JsBigInt.Create(BigInteger.Pow(left.AsBigInt(), (int) exponent));
-                }
-
-                return NormalCompletion(result);
+                    Operator.BitwiseAnd => "op_BitwiseAnd",
+                    Operator.BitwiseOr => "op_BitwiseOr",
+                    Operator.BitwiseXor => "op_ExclusiveOr",
+                    Operator.LeftShift => "op_LeftShift",
+                    Operator.RightShift => "op_RightShift",
+                    Operator.UnsignedRightShift => "op_UnsignedRightShift",
+                    _ => null
+                };
             }
         }
 
-        private sealed class InBinaryExpression : JintBinaryExpression
+        private readonly Operator _operator;
+
+        public BitwiseBinaryExpression(NonLogicalBinaryExpression expression) : base(expression)
         {
-            public InBinaryExpression(Engine engine, BinaryExpression expression) : base(engine, expression)
-            {
-            }
-
-            protected override ExpressionResult EvaluateInternal(EvaluationContext context)
-            {
-                var left = _left.GetValue(context).Value;
-                var right = _right.GetValue(context).Value;
-
-                var oi = right as ObjectInstance;
-                if (oi is null)
-                {
-                    ExceptionHelper.ThrowTypeError(context.Engine.Realm, "in can only be used with an object");
-                }
-
-                return NormalCompletion(oi.HasProperty(left) ? JsBoolean.True : JsBoolean.False);
-            }
+            _operator = expression.Operator;
         }
 
-        private sealed class ModuloBinaryExpression : JintBinaryExpression
+        protected override object EvaluateInternal(EvaluationContext context)
         {
-            public ModuloBinaryExpression(Engine engine, BinaryExpression expression) : base(engine, expression)
+            if (!TryEvaluateOperands(context, out var lval, out var rval))
             {
+                return JsValue.Undefined;
             }
 
-            protected override ExpressionResult EvaluateInternal(EvaluationContext context)
+            if (context.OperatorOverloadingAllowed
+                && TryOperatorOverloading(context, lval, rval, OperatorClrName, out var opResult))
             {
-                var left = _left.GetValue(context).Value;
-                var right = _right.GetValue(context).Value;
-
-                if (context.OperatorOverloadingAllowed
-                    && TryOperatorOverloading(context, left, right, "op_Modulus", out var opResult))
-                {
-                    return NormalCompletion(JsValue.FromObject(context.Engine, opResult));
-                }
-
-                var result = Undefined.Instance;
-                left = TypeConverter.ToNumeric(left);
-                right = TypeConverter.ToNumeric(right);
-
-                if (AreIntegerOperands(left, right))
-                {
-                    var leftInteger = left.AsInteger();
-                    var rightInteger = right.AsInteger();
-
-                    if (rightInteger == 0)
-                    {
-                        result = JsNumber.DoubleNaN;
-                    }
-                    else
-                    {
-                        var modulo = leftInteger % rightInteger;
-                        if (modulo == 0 && leftInteger < 0)
-                        {
-                            result = JsNumber.NegativeZero;
-                        }
-                        else
-                        {
-                            result = JsNumber.Create(modulo);
-                        }
-                    }
-                }
-                else if (AreNonBigIntOperands(left, right))
-                {
-                    var n = left.AsNumber();
-                    var d = right.AsNumber();
-
-                    if (double.IsNaN(n) || double.IsNaN(d) || double.IsInfinity(n))
-                    {
-                        result = JsNumber.DoubleNaN;
-                    }
-                    else if (double.IsInfinity(d))
-                    {
-                        result = n;
-                    }
-                    else if (NumberInstance.IsPositiveZero(d) || NumberInstance.IsNegativeZero(d))
-                    {
-                        result = JsNumber.DoubleNaN;
-                    }
-                    else if (NumberInstance.IsPositiveZero(n) || NumberInstance.IsNegativeZero(n))
-                    {
-                        result = n;
-                    }
-                    else
-                    {
-                        result = JsNumber.Create(n % d);
-                    }
-                }
-                else
-                {
-                    AssertValidBigIntArithmeticOperands(context, left, right);
-
-                    var n = TypeConverter.ToBigInt(left);
-                    var d = TypeConverter.ToBigInt(right);
-
-                    if (d == 0)
-                    {
-                        ExceptionHelper.ThrowRangeError(context.Engine.Realm, "Division by zero");
-                    }
-                    else if (n == 0)
-                    {
-                        result = JsBigInt.Zero;
-                    }
-                    else
-                    {
-                        result = JsBigInt.Create(n % d);
-                    }
-                }
-
-                return NormalCompletion(result);
-            }
-        }
-
-        private sealed class BitwiseBinaryExpression : JintBinaryExpression
-        {
-            private string OperatorClrName
-            {
-                get
-                {
-                    return _operator switch
-                    {
-                        BinaryOperator.BitwiseAnd => "op_BitwiseAnd",
-                        BinaryOperator.BitwiseOr => "op_BitwiseOr",
-                        BinaryOperator.BitwiseXOr => "op_ExclusiveOr",
-                        BinaryOperator.LeftShift => "op_LeftShift",
-                        BinaryOperator.RightShift => "op_RightShift",
-                        BinaryOperator.UnsignedRightShift => "op_UnsignedRightShift",
-                        _ => null
-                    };
-                }
+                return JsValue.FromObject(context.Engine, opResult);
             }
 
-            private readonly BinaryOperator _operator;
+            var lnum = TypeConverter.ToNumeric(lval);
+            var rnum = TypeConverter.ToNumeric(rval);
 
-            public BitwiseBinaryExpression(Engine engine, BinaryExpression expression) : base(engine, expression)
+            if (lnum.Type != rnum.Type)
             {
-                _operator = expression.Operator;
+                Throw.TypeErrorNoEngine("Cannot mix BigInt and other types, use explicit conversions", _left._expression);
             }
 
-            protected override ExpressionResult EvaluateInternal(EvaluationContext context)
+            if (AreIntegerOperands(lnum, rnum))
             {
-                var lval = _left.GetValue(context).Value;
-                var rval = _right.GetValue(context).Value;
+                int leftValue = lnum.AsInteger();
+                int rightValue = rnum.AsInteger();
 
-                if (context.OperatorOverloadingAllowed
-                    && TryOperatorOverloading(context, lval, rval, OperatorClrName, out var opResult))
-                {
-                    return NormalCompletion(JsValue.FromObject(context.Engine, opResult));
-                }
-
-                var lnum = TypeConverter.ToNumeric(lval);
-                var rnum = TypeConverter.ToNumeric(rval);
-
-                if (lnum.Type != rnum.Type)
-                {
-                    ExceptionHelper.ThrowTypeError(context.Engine.Realm);
-                }
-
-                if (AreIntegerOperands(lnum, rnum))
-                {
-                    int leftValue = lnum.AsInteger();
-                    int rightValue = rnum.AsInteger();
-
-                    JsValue result = null;
-                    switch (_operator)
-                    {
-                        case BinaryOperator.BitwiseAnd:
-                            result = JsNumber.Create(leftValue & rightValue);
-                            break;
-                        case BinaryOperator.BitwiseOr:
-                            result = JsNumber.Create(leftValue | rightValue);
-                            break;
-                        case BinaryOperator.BitwiseXOr:
-                            result = JsNumber.Create(leftValue ^ rightValue);
-                            break;
-                        case BinaryOperator.LeftShift:
-                            result = JsNumber.Create(leftValue << (int) ((uint) rightValue & 0x1F));
-                            break;
-                        case BinaryOperator.RightShift:
-                            result = JsNumber.Create(leftValue >> (int) ((uint) rightValue & 0x1F));
-                            break;
-                        case BinaryOperator.UnsignedRightShift:
-                            result = JsNumber.Create((uint) leftValue >> (int) ((uint) rightValue & 0x1F));
-                            break;
-                        default:
-                            ExceptionHelper.ThrowArgumentOutOfRangeException(nameof(_operator), "unknown shift operator");
-                            break;
-                    }
-
-                    return NormalCompletion(result);
-                }
-
-                return NormalCompletion(EvaluateNonInteger(context.Engine.Realm, lnum, rnum));
-            }
-
-            private JsValue EvaluateNonInteger(Realm realm, JsValue left, JsValue right)
-            {
+                JsValue? result = null;
                 switch (_operator)
                 {
-                    case BinaryOperator.BitwiseAnd:
+                    case Operator.BitwiseAnd:
+                        result = JsNumber.Create(leftValue & rightValue);
+                        break;
+                    case Operator.BitwiseOr:
+                        result = JsNumber.Create(leftValue | rightValue);
+                        break;
+                    case Operator.BitwiseXor:
+                        result = JsNumber.Create(leftValue ^ rightValue);
+                        break;
+                    case Operator.LeftShift:
+                        result = JsNumber.Create(leftValue << (int) ((uint) rightValue & 0x1F));
+                        break;
+                    case Operator.RightShift:
+                        result = JsNumber.Create(leftValue >> (int) ((uint) rightValue & 0x1F));
+                        break;
+                    case Operator.UnsignedRightShift:
+                        result = JsNumber.Create((uint) leftValue >> (int) ((uint) rightValue & 0x1F));
+                        break;
+                    default:
+                        Throw.ArgumentOutOfRangeException(nameof(_operator), "unknown shift operator");
+                        break;
+                }
+
+                return result;
+            }
+
+            return EvaluateNonInteger(lnum, rnum);
+        }
+
+        private JsValue EvaluateNonInteger(JsValue left, JsValue right)
+        {
+            switch (_operator)
+            {
+                case Operator.BitwiseAnd:
                     {
                         if (!left.IsBigInt())
                         {
@@ -801,7 +1066,7 @@ namespace Jint.Runtime.Interpreter.Expressions
                         return JsBigInt.Create(TypeConverter.ToBigInt(left) & TypeConverter.ToBigInt(right));
                     }
 
-                    case BinaryOperator.BitwiseOr:
+                case Operator.BitwiseOr:
                     {
                         if (!left.IsBigInt())
                         {
@@ -810,7 +1075,7 @@ namespace Jint.Runtime.Interpreter.Expressions
                         return JsBigInt.Create(TypeConverter.ToBigInt(left) | TypeConverter.ToBigInt(right));
                     }
 
-                    case BinaryOperator.BitwiseXOr:
+                case Operator.BitwiseXor:
                     {
                         if (!left.IsBigInt())
                         {
@@ -819,7 +1084,7 @@ namespace Jint.Runtime.Interpreter.Expressions
                         return JsBigInt.Create(TypeConverter.ToBigInt(left) ^ TypeConverter.ToBigInt(right));
                     }
 
-                    case BinaryOperator.LeftShift:
+                case Operator.LeftShift:
                     {
                         if (!left.IsBigInt())
                         {
@@ -828,7 +1093,7 @@ namespace Jint.Runtime.Interpreter.Expressions
                         return JsBigInt.Create(TypeConverter.ToBigInt(left) << (int) TypeConverter.ToBigInt(right));
                     }
 
-                    case BinaryOperator.RightShift:
+                case Operator.RightShift:
                     {
                         if (!left.IsBigInt())
                         {
@@ -837,22 +1102,21 @@ namespace Jint.Runtime.Interpreter.Expressions
                         return JsBigInt.Create(TypeConverter.ToBigInt(left) >> (int) TypeConverter.ToBigInt(right));
                     }
 
-                    case BinaryOperator.UnsignedRightShift:
+                case Operator.UnsignedRightShift:
                     {
                         if (!left.IsBigInt())
                         {
                             return JsNumber.Create((uint) TypeConverter.ToInt32(left) >> (int) (TypeConverter.ToUint32(right) & 0x1F));
                         }
-                        ExceptionHelper.ThrowTypeError(realm);
+                        Throw.TypeErrorNoEngine("BigInts have no unsigned right shift, use >> instead", _left._expression);
                         return null;
                     }
 
-                    default:
+                default:
                     {
-                        ExceptionHelper.ThrowArgumentOutOfRangeException(nameof(_operator), "unknown shift operator");
+                        Throw.ArgumentOutOfRangeException(nameof(_operator), "unknown shift operator");
                         return null;
                     }
-                }
             }
         }
     }

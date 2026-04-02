@@ -1,42 +1,35 @@
-﻿#nullable enable
-
-using Esprima.Ast;
 using Jint.Native;
+using Jint.Native.AsyncFunction;
 using Jint.Native.Function;
-using Jint.Native.Object;
-using Jint.Runtime.Environments;
 using Jint.Runtime.Interpreter.Expressions;
+using Environment = Jint.Runtime.Environments.Environment;
 
 namespace Jint.Runtime.Interpreter.Statements;
 
 internal sealed class JintExportDefaultDeclaration : JintStatement<ExportDefaultDeclaration>
 {
-    private ClassDefinition? _classDefinition;
-    private JintFunctionDeclarationStatement? _functionDeclaration;
-    private JintExpression? _assignmentExpression;
-    private JintExpression? _simpleExpression;
+    private readonly ClassDefinition? _classDefinition;
+    private readonly JintFunctionDeclarationStatement? _functionDeclaration;
+    private readonly JintExpression? _assignmentExpression;
+    private readonly JintExpression? _simpleExpression;
 
     public JintExportDefaultDeclaration(ExportDefaultDeclaration statement) : base(statement)
     {
-    }
-
-    protected override void Initialize(EvaluationContext context)
-    {
-        if (_statement.Declaration is ClassDeclaration classDeclaration)
+        if (statement.Declaration is ClassDeclaration classDeclaration)
         {
-            _classDefinition = new ClassDefinition(className: classDeclaration.Id?.Name, classDeclaration.SuperClass, classDeclaration.Body);
+            _classDefinition = new ClassDefinition(className: classDeclaration.Id?.Name ?? "default", classDeclaration.SuperClass, classDeclaration.Body);
         }
-        else if (_statement.Declaration is FunctionDeclaration functionDeclaration)
+        else if (statement.Declaration is FunctionDeclaration functionDeclaration)
         {
             _functionDeclaration = new JintFunctionDeclarationStatement(functionDeclaration);
         }
-        else if (_statement.Declaration is AssignmentExpression assignmentExpression)
+        else if (statement.Declaration is AssignmentExpression assignmentExpression)
         {
-            _assignmentExpression = JintAssignmentExpression.Build(context.Engine, assignmentExpression);
+            _assignmentExpression = JintAssignmentExpression.Build(assignmentExpression);
         }
         else
         {
-            _simpleExpression = JintExpression.Build(context.Engine, (Expression) _statement.Declaration);
+            _simpleExpression = JintExpression.Build((Expression) statement.Declaration);
         }
     }
 
@@ -46,6 +39,15 @@ internal sealed class JintExportDefaultDeclaration : JintStatement<ExportDefault
     protected override Completion ExecuteInternal(EvaluationContext context)
     {
         var env = context.Engine.ExecutionContext.LexicalEnvironment;
+        var asyncFn = context.Engine.ExecutionContext.AsyncFunction;
+
+        // For function/class declarations, the binding is already initialized in SourceTextModule.InitializeEnvironment
+        // Skip if already bound AND we're not resuming from an async suspension
+        if (env.HasBinding("*default*") && (asyncFn is null || !asyncFn._isResuming))
+        {
+            return Completion.Empty();
+        }
+
         JsValue value;
         if (_classDefinition is not null)
         {
@@ -54,43 +56,50 @@ internal sealed class JintExportDefaultDeclaration : JintStatement<ExportDefault
             if (classBinding != null)
             {
                 env.CreateMutableBinding(classBinding);
-                env.InitializeBinding(classBinding, value);
+                env.InitializeBinding(classBinding, value, DisposeHint.Normal);
             }
-        }     
+        }
         else if (_functionDeclaration is not null)
         {
             value = _functionDeclaration.Execute(context).GetValueOrDefault();
         }
         else if (_assignmentExpression is not null)
         {
-            value = _assignmentExpression.GetValue(context).GetValueOrDefault();
+            value = _assignmentExpression.GetValue(context);
         }
         else
         {
-            value = _simpleExpression!.GetValue(context).GetValueOrDefault();
+            value = _simpleExpression!.GetValue(context);
         }
 
-        if (value is ObjectInstance oi && !oi.HasOwnProperty("name"))
+        // Check if we suspended at an await - don't initialize yet
+        if (asyncFn?._state == AsyncFunctionState.SuspendedAwait)
         {
-            oi.SetFunctionName("default");
+            return Completion.Empty();
         }
-        
-        env.InitializeBinding("*default*", value);
+
+        if (value is Function functionInstance
+            && string.IsNullOrWhiteSpace(functionInstance._nameDescriptor?._value?.ToString()))
+        {
+            functionInstance.SetFunctionName("default");
+        }
+
+        env.InitializeBinding("*default*", value, DisposeHint.Normal);
         return Completion.Empty();
     }
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-initializeboundname
     /// </summary>
-    private void InitializeBoundName(string name, JsValue value, EnvironmentRecord? environment)
+    private static void InitializeBoundName(string name, JsValue value, Environment? environment)
     {
         if (environment is not null)
         {
-            environment.InitializeBinding(name, value);
+            environment.InitializeBinding(name, value, DisposeHint.Normal);
         }
         else
         {
-            ExceptionHelper.ThrowNotImplementedException();
+            Throw.NotImplementedException();
         }
     }
 }

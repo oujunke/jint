@@ -1,100 +1,140 @@
-﻿using System;
-using System.Collections.Generic;
+namespace Jint.Tests.Runtime.ExtensionMethods;
 
-namespace Jint.Tests.Runtime.ExtensionMethods
+internal class Subscribe<T> : IObserver<T>
 {
-    internal class Subscribe<T> : IObserver<T>
+    private readonly Action<T> onNext;
+    private readonly Action<Exception> onError;
+    private readonly Action onCompleted;
+
+    readonly int isStopped = 0;
+
+    public Subscribe(Action<T> onNext, Action<Exception> onError, Action onCompleted)
     {
-        private readonly Action<T> onNext;
-        private readonly Action<Exception> onError;
-        private readonly Action onCompleted;
+        this.onNext = onNext;
+        this.onError = onError;
+        this.onCompleted = onCompleted;
+    }
 
-        int isStopped = 0;
-
-        public Subscribe(Action<T> onNext, Action<Exception> onError, Action onCompleted)
+    public void OnNext(T value)
+    {
+        if (isStopped == 0)
         {
-            this.onNext = onNext;
-            this.onError = onError;
-            this.onCompleted = onCompleted;
-        }
-
-        public void OnNext(T value)
-        {
-            if (isStopped == 0)
-            {
-                onNext(value);
-            }
-        }
-
-        public void OnError(Exception error)
-        {
-            onError(error);
-        }
-
-
-        public void OnCompleted()
-        {
-            onCompleted();
+            onNext(value);
         }
     }
 
-    public static partial class ObservableExtensions
+    public void OnError(Exception error)
     {
-        public static void Subscribe<T>(this IObservable<T> source, Action<T> onNext)
+        onError(error);
+    }
+
+
+    public void OnCompleted()
+    {
+        onCompleted();
+    }
+}
+
+public static partial class ObservableExtensions
+{
+    public static void Subscribe<T>(this IObservable<T> source, Action<T> onNext)
+    {
+        var subs = new Subscribe<T>(onNext, null, null);
+        source.Subscribe(subs);
+    }
+
+    public static TResult Select<T, TResult>(this IObservable<T> source, TResult result)
+    {
+        return result;
+    }
+
+    public static IObservable<T> Where<T>(this IObservable<T> source, Func<T, bool> predicate)
+    {
+        T t = default;
+        predicate(t);
+        return source;
+    }
+
+    public static IObservable<T> Where<T>(this IObservable<T> source, Func<T, int, bool> predicate)
+    {
+        T t = default;
+        bool result = predicate(t, 42);
+        return source;
+    }
+}
+
+public class BaseObservable<T> : IObservable<T>
+{
+    private readonly List<IObserver<T>> observers = new List<IObserver<T>>();
+
+    public T Last { get; private set; }
+
+    public IDisposable Subscribe(IObserver<T> observer)
+    {
+        if (!observers.Contains(observer))
+            observers.Add(observer);
+        return new Unsubscriber(observers, observer);
+    }
+
+    private class Unsubscriber : IDisposable
+    {
+        private readonly List<IObserver<T>> _observers;
+        private readonly IObserver<T> _observer;
+
+        public Unsubscriber(List<IObserver<T>> observers, IObserver<T> observer)
         {
-            var subs = new Subscribe<T>(onNext, null, null);
-            source.Subscribe(subs);
+            this._observers = observers;
+            this._observer = observer;
+        }
+
+        public void Dispose()
+        {
+            if (_observer != null && _observers.Contains(_observer))
+                _observers.Remove(_observer);
         }
     }
 
-    public class NameObservable : IObservable<string>
+    protected void BroadcastUpdate(T t)
     {
-        private List<IObserver<string>> observers = new List<IObserver<string>>();
-
-        public string Last { get; private set; }
-
-        public IDisposable Subscribe(IObserver<string> observer)
+        foreach (var observer in observers)
         {
-            if (!observers.Contains(observer))
-                observers.Add(observer);
-            return new Unsubscriber(observers, observer);
+            observer.OnNext(t);
         }
+    }
 
-        private class Unsubscriber : IDisposable
+    public void Update(T t)
+    {
+        Last = t;
+        BroadcastUpdate(t);
+    }
+
+    public void BroadcastCompleted()
+    {
+        foreach (var observer in observers.ToArray())
         {
-            private List<IObserver<string>> _observers;
-            private IObserver<string> _observer;
-
-            public Unsubscriber(List<IObserver<string>> observers, IObserver<string> observer)
-            {
-                this._observers = observers;
-                this._observer = observer;
-            }
-
-            public void Dispose()
-            {
-                if (_observer != null && _observers.Contains(_observer))
-                    _observers.Remove(_observer);
-            }
+            observer.OnCompleted();
         }
+        observers.Clear();
+    }
+}
 
-        public void UpdateName(string name)
-        {
-            Last = name;
-            foreach (var observer in observers)
-            {
-                observer.OnNext(name);
-            }
-        }
+public class ObservableFactory
+{
+    public static BaseObservable<bool> GetBoolBaseObservable()
+    {
+        return new BaseObservable<bool>();
+    }
+}
 
-        public void CommitName()
-        {
-            foreach (var observer in observers.ToArray())
-            {
-                observer.OnCompleted();
-            }
+public class NameObservable : BaseObservable<string>
+{
+    public void UpdateName(string name)
+    {
+        Update(name);
+    }
 
-            observers.Clear();
-        }
+    public void CommitName()
+    {
+        BroadcastCompleted();
     }
 }

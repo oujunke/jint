@@ -1,16 +1,17 @@
 using System.Diagnostics;
-using Xunit;
+using System.Runtime.CompilerServices;
 
-namespace Jint.Tests
+namespace Jint.Tests;
+
+public class RunnableInDebugOnlyAttribute : FactAttribute
 {
-    public class RunnableInDebugOnlyAttribute : FactAttribute
+    public RunnableInDebugOnlyAttribute(
+        [CallerFilePath] string sourceFilePath = null,
+        [CallerLineNumber] int sourceLineNumber = -1) : base(sourceFilePath, sourceLineNumber)
     {
-        public RunnableInDebugOnlyAttribute()
+        if (!Debugger.IsAttached)
         {
-            if (!Debugger.IsAttached)
-            {
-                Skip = "Only running in interactive mode.";
-            }
+            Skip = "Only running in interactive mode.";
         }
     }
 }

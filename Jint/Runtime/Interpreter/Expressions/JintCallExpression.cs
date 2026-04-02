@@ -1,260 +1,273 @@
-using Esprima.Ast;
+using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using Jint.Native;
 using Jint.Native.Function;
 using Jint.Native.Object;
+using Jint.Runtime.CallStack;
 using Jint.Runtime.Environments;
-using Jint.Runtime.References;
+using Environment = Jint.Runtime.Environments.Environment;
 
-namespace Jint.Runtime.Interpreter.Expressions
+namespace Jint.Runtime.Interpreter.Expressions;
+
+internal sealed class JintCallExpression : JintExpression
 {
-    internal sealed class JintCallExpression : JintExpression
+    private readonly ExpressionCache _arguments = new();
+    private readonly JintExpression _calleeExpression;
+
+    public JintCallExpression(CallExpression expression) : base(expression)
     {
-        private CachedArgumentsHolder _cachedArguments;
-        private bool _cached;
+        _arguments.Initialize(expression.Arguments.AsSpan());
+        _calleeExpression = Build(expression.Callee);
+    }
 
-        private JintExpression _calleeExpression;
-        private bool _hasSpreads;
+    protected override object EvaluateInternal(EvaluationContext context)
+    {
 
-        public JintCallExpression(CallExpression expression) : base(expression)
+        if (!context.Engine._stackGuard.TryEnterOnCurrentStack())
         {
-            _initialized = false;
+            return StackGuard.RunOnEmptyStack(EvaluateInternal, context);
         }
 
-        protected override void Initialize(EvaluationContext context)
+        if (_calleeExpression._expression.Type == NodeType.Super)
         {
-            var engine = context.Engine;
-            var expression = (CallExpression) _expression;
-            _calleeExpression = Build(engine, expression.Callee);
-            var cachedArgumentsHolder = new CachedArgumentsHolder
-            {
-                JintArguments = new JintExpression[expression.Arguments.Count]
-            };
+            return SuperCall(context);
+        }
 
-            static bool CanSpread(Node e)
+        // https://tc39.es/ecma262/#sec-function-calls
+
+        var reference = _calleeExpression.Evaluate(context);
+
+        // Check for generator suspension after evaluating callee
+        if (context.IsSuspended())
+        {
+            return reference as JsValue ?? JsValue.Undefined;
+        }
+
+        if (ReferenceEquals(reference, JsValue.Undefined))
+        {
+            return JsValue.Undefined;
+        }
+
+        var engine = context.Engine;
+        var func = engine.GetValue(reference, false);
+
+        if (func.IsNullOrUndefined() && _expression.IsOptional())
+        {
+            return JsValue.Undefined;
+        }
+
+        var referenceRecord = reference as Reference;
+        if (ReferenceEquals(func, engine.Realm.Intrinsics.Eval)
+            && referenceRecord != null
+            && !referenceRecord.IsPropertyReference
+            && CommonProperties.Eval.Equals(referenceRecord.ReferencedName))
+        {
+            return HandleEval(context, func, engine, referenceRecord);
+        }
+
+        var thisCall = (CallExpression) _expression;
+        var tailCall = IsInTailPosition(thisCall);
+
+        // https://tc39.es/ecma262/#sec-evaluatecall
+
+        JsValue thisObject;
+        if (referenceRecord is not null)
+        {
+            if (referenceRecord.IsPropertyReference)
             {
-                return e?.Type == Nodes.SpreadElement
-                    || e is AssignmentExpression ae && ae.Right?.Type == Nodes.SpreadElement;
+                thisObject = referenceRecord.ThisValue;
             }
-
-            bool cacheable = true;
-            for (var i = 0; i < expression.Arguments.Count; i++)
+            else
             {
-                var expressionArgument = expression.Arguments[i];
-                cachedArgumentsHolder.JintArguments[i] = Build(engine, expressionArgument);
-                cacheable &= expressionArgument.Type == Nodes.Literal;
-                _hasSpreads |= CanSpread(expressionArgument);
-                if (expressionArgument is ArrayExpression ae)
+                var baseValue = referenceRecord.Base;
+
+                // deviation from the spec to support null-propagation helper
+                if (baseValue.IsNullOrUndefined()
+                    && engine._referenceResolver.TryUnresolvableReference(engine, referenceRecord, out var value))
                 {
-                    for (var elementIndex = 0; elementIndex < ae.Elements.Count; elementIndex++)
-                    {
-                        _hasSpreads |= CanSpread(ae.Elements[elementIndex]);
-                    }
-                }
-            }
-
-            if (cacheable)
-            {
-                _cached = true;
-                var arguments = System.Array.Empty<JsValue>();
-                if (cachedArgumentsHolder.JintArguments.Length > 0)
-                {
-                    arguments = new JsValue[cachedArgumentsHolder.JintArguments.Length];
-                    BuildArguments(context, cachedArgumentsHolder.JintArguments, arguments);
-                }
-
-                cachedArgumentsHolder.CachedArguments = arguments;
-            }
-
-            _cachedArguments = cachedArgumentsHolder;
-        }
-
-        protected override ExpressionResult EvaluateInternal(EvaluationContext context)
-        {
-            return NormalCompletion(_calleeExpression is JintSuperExpression
-                ? SuperCall(context)
-                : Call(context)
-            );
-        }
-
-        private JsValue SuperCall(EvaluationContext context)
-        {
-            var engine = context.Engine;
-            var thisEnvironment = (FunctionEnvironmentRecord) engine.ExecutionContext.GetThisEnvironment();
-            var newTarget = engine.GetNewTarget(thisEnvironment);
-            var func = GetSuperConstructor(thisEnvironment);
-            if (!func.IsConstructor)
-            {
-                ExceptionHelper.ThrowTypeError(engine.Realm, "Not a constructor");
-            }
-
-            var argList = ArgumentListEvaluation(context);
-            var result = ((IConstructor) func).Construct(argList, newTarget);
-            var thisER = (FunctionEnvironmentRecord) engine.ExecutionContext.GetThisEnvironment();
-            return thisER.BindThisValue(result);
-        }
-
-        /// <summary>
-        /// https://tc39.es/ecma262/#sec-getsuperconstructor
-        /// </summary>
-        private static ObjectInstance GetSuperConstructor(FunctionEnvironmentRecord thisEnvironment)
-        {
-            var envRec = thisEnvironment;
-            var activeFunction = envRec._functionObject;
-            var superConstructor = activeFunction.GetPrototypeOf();
-            return superConstructor;
-        }
-
-        /// <summary>
-        /// https://tc39.es/ecma262/#sec-function-calls
-        /// </summary>
-        private JsValue Call(EvaluationContext context)
-        {
-            var reference = _calleeExpression.Evaluate(context).Value;
-
-            if (ReferenceEquals(reference, Undefined.Instance))
-            {
-                return Undefined.Instance;
-            }
-
-            var engine = context.Engine;
-            var func = engine.GetValue(reference, false);
-
-            if (reference is Reference referenceRecord
-                && !referenceRecord.IsPropertyReference()
-                && referenceRecord.GetReferencedName() == CommonProperties.Eval
-                && ReferenceEquals(func, engine.Realm.Intrinsics.Eval))
-            {
-                var argList = ArgumentListEvaluation(context);
-                if (argList.Length == 0)
-                {
-                    return Undefined.Instance;
-                }
-
-                var evalFunctionInstance = (EvalFunctionInstance) func;
-                var evalArg = argList[0];
-                var strictCaller = StrictModeScope.IsStrictModeCode;
-                var evalRealm = evalFunctionInstance._realm;
-                var direct = !((CallExpression) _expression).Optional;
-                var value = evalFunctionInstance.PerformEval(evalArg, evalRealm, strictCaller, direct);
-                engine._referencePool.Return(referenceRecord);
-                return value;
-            }
-
-            var thisCall = (CallExpression) _expression;
-            var tailCall = IsInTailPosition(thisCall);
-            return EvaluateCall(context, func, reference, thisCall.Arguments, tailCall);
-        }
-
-        /// <summary>
-        /// https://tc39.es/ecma262/#sec-evaluatecall
-        /// </summary>
-        private JsValue EvaluateCall(EvaluationContext context, JsValue func, object reference, in NodeList<Expression> arguments, bool tailPosition)
-        {
-            JsValue thisValue;
-            var referenceRecord = reference as Reference;
-            var engine = context.Engine;
-            if (referenceRecord is not null)
-            {
-                if (referenceRecord.IsPropertyReference())
-                {
-                    thisValue = referenceRecord.GetThisValue();
+                    thisObject = value;
                 }
                 else
                 {
-                    var baseValue = referenceRecord.GetBase();
-
-                    // deviation from the spec to support null-propagation helper
-                    if (baseValue.IsNullOrUndefined()
-                        && engine._referenceResolver.TryUnresolvableReference(engine, referenceRecord, out var value))
-                    {
-                        thisValue = value;
-                    }
-                    else
-                    {
-                        var refEnv = (EnvironmentRecord) baseValue;
-                        thisValue = refEnv.WithBaseObject();   
-                    }
+                    var refEnv = (Environment) baseValue;
+                    thisObject = refEnv.WithBaseObject();
                 }
             }
-            else
+        }
+        else
+        {
+            thisObject = JsValue.Undefined;
+        }
+
+        var arguments = this._arguments.ArgumentListEvaluation(context, out var rented);
+
+        // Check for generator suspension after argument evaluation
+        if (context.IsSuspended())
+        {
+            if (rented && arguments is not null)
             {
-                thisValue = Undefined.Instance;
+                engine._jsValueArrayPool.ReturnArray(arguments);
+            }
+            return func; // Return any value, caller will check Suspended
+        }
+
+        if (!func.IsObject() && !engine._referenceResolver.TryGetCallable(engine, reference, out func))
+        {
+            ThrowMemberIsNotFunction(referenceRecord, reference, engine);
+        }
+
+        var callable = func as ICallable;
+        if (callable is null)
+        {
+            ThrowReferenceNotFunction(referenceRecord, reference, engine);
+        }
+
+        if (tailCall)
+        {
+            // TODO tail call
+            // PrepareForTailCall();
+        }
+
+        // ensure logic is in sync between Call, Construct and JintCallExpression!
+
+        JsValue result;
+        if (callable is Function functionInstance)
+        {
+            var callStack = engine.CallStack;
+            var recursionDepth = callStack.Push(functionInstance, _calleeExpression, engine.ExecutionContext);
+
+            if (recursionDepth > engine.Options.Constraints.MaxRecursionDepth)
+            {
+                // automatically pops the current element as it was never reached
+                Throw.RecursionDepthOverflowException(callStack);
             }
 
-            var argList = ArgumentListEvaluation(context);
-
-            if (!func.IsObject() && !engine._referenceResolver.TryGetCallable(engine, reference, out func))
+            try
             {
-                var message = referenceRecord == null
-                    ? reference + " is not a function"
-                    : $"Property '{referenceRecord.GetReferencedName()}' of object is not a function";
-                ExceptionHelper.ThrowTypeError(engine.Realm, message);
+                result = functionInstance.Call(thisObject, arguments);
             }
-
-            var callable = func as ICallable;
-            if (callable is null)
+            finally
             {
-                var message = $"{referenceRecord?.GetReferencedName() ?? reference} is not a function";
-                ExceptionHelper.ThrowTypeError(engine.Realm, message);
+                // if call stack was reset due to recursive call to engine or similar, we might not have it anymore
+                if (callStack.Count > 0)
+                {
+                    callStack.Pop();
+                }
             }
+        }
+        else
+        {
+            result = callable.Call(thisObject, arguments);
+        }
 
-            if (tailPosition)
-            {
-                // TODO tail call
-                // PrepareForTailCall();
-            }
+        if (rented)
+        {
+            engine._jsValueArrayPool.ReturnArray(arguments);
+        }
 
-            var result = engine.Call(callable, thisValue, argList, _calleeExpression);
+        engine._referencePool.Return(referenceRecord);
+        return result;
+    }
 
-            if (!_cached && argList.Length > 0)
+    [DoesNotReturn]
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowReferenceNotFunction(Reference? referenceRecord1, object reference, Engine engine)
+    {
+        var message = $"{referenceRecord1?.ReferencedName ?? reference} is not a function";
+        Throw.TypeError(engine.Realm, message);
+    }
+
+    [DoesNotReturn]
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowMemberIsNotFunction(Reference? referenceRecord1, object reference, Engine engine)
+    {
+        var message = referenceRecord1 == null
+            ? reference + " is not a function"
+            : $"Property '{referenceRecord1.ReferencedName}' of object is not a function";
+        Throw.TypeError(engine.Realm, message);
+    }
+
+    private JsValue HandleEval(EvaluationContext context, JsValue func, Engine engine, Reference referenceRecord)
+    {
+        var argList = _arguments.ArgumentListEvaluation(context, out var rented);
+
+        if (argList.Length == 0)
+        {
+            return JsValue.Undefined;
+        }
+
+        var evalFunctionInstance = (EvalFunction) func;
+        var evalArg = argList[0];
+        var strictCaller = StrictModeScope.IsStrictModeCode;
+        var evalRealm = evalFunctionInstance._realm;
+        var direct = !_expression.IsOptional();
+        var value = evalFunctionInstance.PerformEval(evalArg, evalRealm, strictCaller, direct);
+
+        if (rented)
+        {
+            engine._jsValueArrayPool.ReturnArray(argList);
+        }
+        engine._referencePool.Return(referenceRecord);
+
+        return value;
+    }
+
+    private ObjectInstance SuperCall(EvaluationContext context)
+    {
+        var engine = context.Engine;
+        var thisEnvironment = (FunctionEnvironment) engine.ExecutionContext.GetThisEnvironment();
+        var newTarget = engine.GetNewTarget(thisEnvironment);
+        var func = GetSuperConstructor(thisEnvironment);
+
+        var rented = false;
+        var defaultSuperCall = ReferenceEquals(_expression, ClassDefinition._defaultSuperCall);
+
+        var argList = defaultSuperCall
+            ? _arguments.DefaultSuperCallArgumentListEvaluation(context)
+            : _arguments.ArgumentListEvaluation(context, out rented);
+
+        if (func is null || !func.IsConstructor)
+        {
+            if (rented)
             {
                 engine._jsValueArrayPool.ReturnArray(argList);
             }
-
-            engine._referencePool.Return(referenceRecord);
-            return result;
+            Throw.TypeError(engine.Realm, "Not a constructor");
         }
 
-        /// <summary>
-        /// https://tc39.es/ecma262/#sec-isintailposition
-        /// </summary>
-        private static bool IsInTailPosition(CallExpression call)
+        var result = ((IConstructor) func).Construct(argList, newTarget);
+
+        var thisER = (FunctionEnvironment) engine.ExecutionContext.GetThisEnvironment();
+        thisER.BindThisValue(result);
+        var F = thisER._functionObject;
+
+        result.InitializeInstanceElements((ScriptFunction) F);
+
+        if (rented)
         {
-            // TODO tail calls
-            return false;
+            engine._jsValueArrayPool.ReturnArray(argList);
         }
 
-        private JsValue[] ArgumentListEvaluation(EvaluationContext context)
-        {
-            var cachedArguments = _cachedArguments;
-            var arguments = System.Array.Empty<JsValue>();
-            if (_cached)
-            {
-                arguments = cachedArguments.CachedArguments;
-            }
-            else
-            {
-                if (cachedArguments.JintArguments.Length > 0)
-                {
-                    if (_hasSpreads)
-                    {
-                        arguments = BuildArgumentsWithSpreads(context, cachedArguments.JintArguments);
-                    }
-                    else
-                    {
-                        arguments = context.Engine._jsValueArrayPool.RentArray(cachedArguments.JintArguments.Length);
-                        BuildArguments(context, cachedArguments.JintArguments, arguments);
-                    }
-                }
-            }
+        return result;
+    }
 
-            return arguments;
-        }
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-getsuperconstructor
+    /// </summary>
+    private static ObjectInstance? GetSuperConstructor(FunctionEnvironment thisEnvironment)
+    {
+        var envRec = thisEnvironment;
+        var activeFunction = envRec._functionObject;
+        var superConstructor = activeFunction.GetPrototypeOf();
+        return superConstructor;
+    }
 
-        private class CachedArgumentsHolder
-        {
-            internal JintExpression[] JintArguments;
-            internal JsValue[] CachedArguments;
-        }
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-isintailposition
+    /// </summary>
+    private static bool IsInTailPosition(CallExpression call)
+    {
+        // TODO tail calls
+        return false;
     }
 }

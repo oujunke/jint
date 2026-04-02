@@ -1,439 +1,315 @@
-﻿using System;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Reflection;
-using System.Text.RegularExpressions;
-using Esprima;
-using Esprima.Ast;
+#nullable enable
+
 using Jint.Native;
-using Jint.Native.ArrayBuffer;
+using Jint.Native.Error;
+using Jint.Native.Object;
 using Jint.Runtime;
-using Jint.Runtime.Descriptors;
 using Jint.Runtime.Interop;
-using Newtonsoft.Json.Linq;
-using Xunit.Abstractions;
-using Xunit.Sdk;
+using Test262Harness;
 
-namespace Jint.Tests.Test262
+namespace Jint.Tests.Test262;
+
+public abstract partial class Test262Test
 {
-    public abstract class Test262Test
+    // Thread-local storage for agent manager (tests run in parallel)
+    [ThreadStatic]
+    private static Test262AgentManager? _currentAgentManager;
+
+    // Thread-local storage for async test result (tests run in parallel)
+    [ThreadStatic]
+    private static string? _asyncResult;
+
+    private static Engine BuildTestExecutor(Test262File file, Test262AgentManager? agentManager)
     {
-        private static readonly Dictionary<string, Script> Sources;
+        // Reset async result tracking
+        _asyncResult = null;
 
-        protected static readonly string BasePath;
-
-        private static readonly TimeZoneInfo _pacificTimeZone;
-
-        private static readonly Dictionary<string, string> _skipReasons = new(StringComparer.OrdinalIgnoreCase);
-
-        private static readonly HashSet<string> _strictSkips = new(StringComparer.OrdinalIgnoreCase);
-
-        private static readonly Regex _moduleFlagRegex = new Regex(@"flags:\s*?\[.*?module.*?]", RegexOptions.Compiled);
-
-        static Test262Test()
+        var engine = new Engine(cfg =>
         {
-            //NOTE: The Date tests in test262 assume the local timezone is Pacific Standard Time
-            try
+            var relativePath = Path.GetDirectoryName(file.FileName) ?? "";
+            cfg.EnableModules(new Test262ModuleLoader(State.Test262Stream.Options.FileSystem, relativePath));
+            cfg.ExperimentalFeatures = ExperimentalFeature.All;
+            cfg.TimeoutInterval(TimeSpan.FromSeconds(30));
+            // Configure agent blocking based on test flags
+            if (file.Flags.Contains("CanBlockIsFalse"))
             {
-                _pacificTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Pacific Standard Time");
+                cfg.AgentCanSuspend = false;
             }
-            catch (TimeZoneNotFoundException)
-            {
-                // https://stackoverflow.com/questions/47848111/how-should-i-fetch-timezoneinfo-in-a-platform-agnostic-way
-                // should be natively supported soon https://github.com/dotnet/runtime/issues/18644
-                _pacificTimeZone = TimeZoneInfo.FindSystemTimeZoneById("America/Los_Angeles");
-            }
+            // Use ICU-based CLDR provider for better Intl support
+            cfg.Intl.CldrProvider = IcuCldrProvider.Instance;
+            // Use NodaTime for accurate IANA timezone support (sub-minute offsets, historical DST)
+            cfg.Temporal.TimeZoneProvider = NodaTimeZoneProvider.Instance;
+        });
 
-            var assemblyPath = new Uri(typeof(Test262Test).GetTypeInfo().Assembly.Location).LocalPath;
-            var assemblyDirectory = new FileInfo(assemblyPath).Directory;
-
-            BasePath = assemblyDirectory.Parent.Parent.Parent.FullName;
-
-            string[] files =
-            {
-                "sta.js",
-                "assert.js",
-                "arrayContains.js",
-                "isConstructor.js",
-                "promiseHelper.js",
-                "propertyHelper.js",
-                "compareArray.js",
-                "decimalToHexString.js",
-                "deepEqual.js",
-                "proxyTrapsHelper.js",
-                "dateConstants.js",
-                "assertRelativeDateMs.js",
-                "regExpUtils.js",
-                "nans.js",
-                "compareIterator.js",
-                "nativeFunctionMatcher.js",
-                "wellKnownIntrinsicObjects.js",
-                "fnGlobalObject.js",
-                "testTypedArray.js",
-                "detachArrayBuffer.js",
-                "byteConversionValues.js",
-                "hidden-constructors.js",
-                "testBigIntTypedArray.js"
-            };
-
-            Sources = new Dictionary<string, Script>(files.Length);
-            for (var i = 0; i < files.Length; i++)
-            {
-                var source = File.ReadAllText(Path.Combine(BasePath, "harness", files[i]));
-                Sources[files[i]] = new JavaScriptParser(source, new ParserOptions(files[i])).ParseScript();
-            }
-
-            var content = File.ReadAllText(Path.Combine(BasePath, "test/skipped.json"));
-            var doc = JArray.Parse(content);
-            foreach (var entry in doc.Values<JObject>())
-            {
-                var source = entry["source"].Value<string>();
-                _skipReasons[source] = entry["reason"].Value<string>();
-                if (entry.TryGetValue("mode", out var mode) && mode.Value<string>() == "strict")
-                {
-                    _strictSkips.Add(source);
-                }
-            }
+        if (file.Flags.Contains("raw"))
+        {
+            // nothing should be loaded
+            return engine;
         }
 
-        protected void RunTestCode(string fileName, string code, bool strict, string fullPath)
+        engine.Execute(State.Sources["assert.js"]);
+        engine.Execute(State.Sources["sta.js"]);
+
+        engine.SetValue("print", new ClrFunction(engine, "print", (_, args) =>
         {
-            var module = _moduleFlagRegex.IsMatch(code);
-
-            var engine = new Engine(cfg =>
+            var message = TypeConverter.ToString(args.At(0));
+            // Capture Test262 async test markers from $DONE via doneprintHandle.js
+            if (message.StartsWith("Test262:AsyncTest", StringComparison.Ordinal))
             {
-                cfg.LocalTimeZone(_pacificTimeZone);
-                cfg.Strict(strict);
-                if (module)
+                // AsyncTestFailure takes priority - once recorded, never overwrite with AsyncTestComplete
+                if (_asyncResult is null || !_asyncResult.StartsWith("Test262:AsyncTestFailure:", StringComparison.Ordinal))
                 {
-                    cfg.EnableModules(Path.Combine(BasePath, "test", Path.GetDirectoryName(fullPath)!));
-                }
-            });
-
-            engine.Execute(Sources["sta.js"]);
-            engine.Execute(Sources["assert.js"]);
-            engine.SetValue("print",
-                new ClrFunctionInstance(engine, "print", (thisObj, args) => TypeConverter.ToString(args.At(0))));
-
-            var o = engine.Realm.Intrinsics.Object.Construct(Arguments.Empty);
-            o.FastSetProperty("evalScript", new PropertyDescriptor(new ClrFunctionInstance(engine, "evalScript",
-                (thisObj, args) =>
-                {
-                    if (args.Length > 1)
-                    {
-                        throw new Exception("only script parsing supported");
-                    }
-
-                    var options = new ParserOptions {AdaptRegexp = true, Tolerant = false};
-                    var parser = new JavaScriptParser(args.At(0).AsString(), options);
-                    var script = parser.ParseScript(strict);
-
-                    return engine.Evaluate(script);
-                }), true, true, true));
-
-            o.FastSetProperty("createRealm", new PropertyDescriptor(new ClrFunctionInstance(engine, "createRealm",
-                (thisObj, args) =>
-                {
-                    var realm = engine._host.CreateRealm();
-                    realm.GlobalObject.Set("global", realm.GlobalObject);
-                    return realm.GlobalObject;
-                }), true, true, true));
-
-            o.FastSetProperty("detachArrayBuffer", new PropertyDescriptor(new ClrFunctionInstance(engine, "detachArrayBuffer",
-                (thisObj, args) =>
-                {
-                    var buffer = (ArrayBufferInstance) args.At(0);
-                    buffer.DetachArrayBuffer();
-                    return JsValue.Undefined;
-                }), true, true, true));
-
-            engine.SetValue("$262", o);
-
-            var includes = Regex.Match(code, @"includes: \[(.+?)\]");
-            if (includes.Success)
-            {
-                var files = includes.Groups[1].Captures[0].Value.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-                foreach (var file in files)
-                {
-                    engine.Execute(Sources[file.Trim()]);
+                    _asyncResult = message;
                 }
             }
+            return message;
+        }));
 
-            if (code.IndexOf("propertyHelper.js", StringComparison.OrdinalIgnoreCase) != -1)
-            {
-                engine.Execute(Sources["propertyHelper.js"]);
-            }
-
-            string lastError = null;
-
-            bool negative = code.IndexOf("negative:", StringComparison.Ordinal) > -1;
-            try
-            {
-                if (module)
-                {
-                    engine.AddModule(fullPath, builder => builder.AddSource(code));
-                    engine.ImportModule(fullPath);
-                }
-                else
-                {
-                    engine.Execute(new JavaScriptParser(code, new ParserOptions(fileName)).ParseScript());
-                }
-            }
-            catch (JavaScriptException j)
-            {
-                lastError = j.ToString();
-            }
-            catch (Exception e)
-            {
-                lastError = e.ToString();
-            }
-
-            if (!negative && !string.IsNullOrWhiteSpace(lastError))
-            {
-                throw new XunitException($"{Environment.NewLine}{fileName}{Environment.NewLine}{Environment.NewLine}{lastError}");
-            }
-        }
-
-        protected void RunTestInternal(SourceFile sourceFile)
+        // Provide a basic setTimeout for async tests that need it
+        engine.SetValue("setTimeout", new ClrFunction(engine, "setTimeout", (thisObj, args) =>
         {
-            if (sourceFile.Skip)
+            var callback = args.At(0);
+            var delay = (int)TypeConverter.ToNumber(args.At(1));
+            if (callback is ICallable callable)
             {
-                return;
-            }
-
-            if (sourceFile.Code.IndexOf("onlyStrict", StringComparison.Ordinal) < 0 && !_moduleFlagRegex.IsMatch(sourceFile.Code))
-            {
-                RunTestCode(sourceFile.Source, sourceFile.Code, strict: false, fullPath: sourceFile.FullPath);
-            }
-
-            if (!_strictSkips.Contains(sourceFile.Source)
-                && sourceFile.Code.IndexOf("noStrict", StringComparison.Ordinal) < 0)
-            {
-                RunTestCode(sourceFile.Source, sourceFile.Code, strict: true, fullPath: sourceFile.FullPath);
-            }
-        }
-
-        public static IEnumerable<object[]> SourceFiles(string pathPrefix, bool skipped)
-        {
-            var results = new ConcurrentBag<object[]>();
-            var fixturesPath = Path.Combine(BasePath, "test");
-            var segments = pathPrefix.Split('\\');
-            var searchPath = Path.Combine(fixturesPath, Path.Combine(segments));
-            var files = Directory.GetFiles(searchPath, "*", SearchOption.AllDirectories);
-
-            foreach (var file in files)
-            {
-                if (file.IndexOf("_FIXTURE", StringComparison.OrdinalIgnoreCase) != -1)
+                _ = Task.Run(async () =>
                 {
-                    // Files bearing a name which includes the sequence _FIXTURE MUST NOT be interpreted
-                    // as standalone tests; they are intended to be referenced by test files.
-                    continue;
-                }
-
-                var name = file.Substring(fixturesPath.Length + 1).Replace("\\", "/");
-                bool skip = _skipReasons.TryGetValue(name, out var reason);
-
-                var code = skip ? "" : File.ReadAllText(file);
-
-                var flags = Regex.Match(code, "flags: \\[(.+?)\\]");
-                if (flags.Success)
-                {
-                    var items = flags.Groups[1].Captures[0].Value.Split(',');
-                    foreach (var item in items.Select(x => x.Trim()))
+                    await Task.Delay(delay);
+                    // Queue callback to event loop instead of calling directly from background thread
+                    // to avoid race conditions with concurrent JavaScript execution
+                    engine.AddToEventLoop(() =>
                     {
-                        switch (item)
-                        {
-                            // TODO implement
-                            case "async":
-                                skip = true;
-                                reason = "async not implemented";
-                                break;
-                        }
-                    }
-                }
-
-                var features = Regex.Match(code, "features: \\[(.+?)\\]");
-                if (features.Success)
-                {
-                    var items = features.Groups[1].Captures[0].Value.Split(',');
-                    foreach (var item in items.Select(x => x.Trim()))
-                    {
-                        switch (item)
-                        {
-                            // TODO implement
-                            case "tail-call-optimization":
-                                skip = true;
-                                reason = "tail-calls not implemented";
-                                break;
-                            case "generators":
-                                skip = true;
-                                reason = "generators not implemented";
-                                break;
-                            case "async-functions":
-                                skip = true;
-                                reason = "async-functions not implemented";
-                                break;
-                            case "async-iteration":
-                                skip = true;
-                                reason = "async not implemented";
-                                break;
-                            case "class-fields-private":
-                            case "class-fields-public":
-                                skip = true;
-                                reason = "private/public class fields not implemented in esprima";
-                                break;
-                            case "String.prototype.replaceAll":
-                                skip = true;
-                                reason = "not in spec yet";
-                                break;
-                            case "regexp-match-indices":
-                                skip = true;
-                                reason = "regexp-match-indices not implemented";
-                                break;
-                            case "regexp-named-groups":
-                                skip = true;
-                                reason = "regexp-named-groups not implemented";
-                                break;
-                            case "regexp-lookbehind":
-                                skip = true;
-                                reason = "regexp-lookbehind not implemented";
-                                break;
-                            case "SharedArrayBuffer":
-                                skip = true;
-                                reason = "SharedArrayBuffer not implemented";
-                                break;
-                            case "resizable-arraybuffer":
-                                skip = true;
-                                reason = "resizable-arraybuffer not implemented";
-                                break;
-                            case "json-modules":
-                                skip = true;
-                                reason = "json-modules not implemented";
-                                break;
-                            case "top-level-await":
-                                skip = true;
-                                reason = "top-level-await not implemented";
-                                break;
-                            case "import-assertions":
-                                skip = true;
-                                reason = "import-assertions not implemented";
-                                break;
-                        }
-                    }
-                }
-
-                if (code.IndexOf("SpecialCasing.txt") > -1)
-                {
-                    skip = true;
-                    reason = "SpecialCasing.txt not implemented";
-                }
-
-                if (name.StartsWith("language/expressions/object/dstr-async-gen-meth-"))
-                {
-                    skip = true;
-                    reason = "Esprima problem, Unexpected token *";
-                }
-
-                // Unicode regular expressions
-
-                if (name.StartsWith("built-ins/RegExp/property-escapes/generated/"))
-                {
-                    skip = true;
-                    reason = "Esprima problem";
-                }
-
-                // Promises
-                if (name.StartsWith("built-ins/Promise/allSettled") ||
-                    name.StartsWith("built-ins/Promise/any"))
-                {
-                    skip = true;
-                    reason = "Promise.any and Promise.allSettled are not implemented yet";
-                }
-
-                if (file.EndsWith("tv-line-continuation.js")
-                    || file.EndsWith("tv-line-terminator-sequence.js")
-                    || file.EndsWith("special-characters.js"))
-                {
-                    // LF endings required
-                    code = code.Replace("\r\n", "\n");
-                }
-
-                var sourceFile = new SourceFile(
-                    name,
-                    file,
-                    skip,
-                    reason,
-                    code);
-
-                if (skipped == sourceFile.Skip)
-                {
-                    results.Add(new object[]
-                    {
-                        sourceFile
+                        callable.Call(JsValue.Undefined, Arguments.Empty);
                     });
-                }
+                });
             }
+            return JsValue.Undefined;
+        }));
 
-            return results;
+        var o = Test262Object.Install(engine);
+
+        // Install agent support if needed
+        agentManager?.InstallAgent(engine, o);
+
+        foreach (var include in file.Includes)
+        {
+            engine.Execute(State.Sources[include]);
         }
 
-        private static ParserOptions CreateParserOptions(string fileName) =>
-            new ParserOptions(fileName)
-            {
-                AdaptRegexp = true,
-                Tolerant = true
-            };
+        if (file.Flags.Contains("async"))
+        {
+            engine.Execute(State.Sources["doneprintHandle.js"]);
+        }
+
+        return engine;
     }
 
-    public class SourceFile : IXunitSerializable
+    private static bool NeedsAgentSupport(Test262File file)
     {
-        public SourceFile()
+        // Check if test includes atomicsHelper.js which indicates multi-agent test
+        return file.Includes.Contains("atomicsHelper.js");
+    }
+
+    // Wrapper that maintains backward compatibility with generated code
+    private static Engine BuildTestExecutor(Test262File file)
+    {
+        // Clean up any previous agent manager
+        _currentAgentManager?.Dispose();
+        _currentAgentManager = null;
+
+        // Create agent manager if test needs it
+        if (NeedsAgentSupport(file))
         {
+            _currentAgentManager = new Test262AgentManager();
         }
 
-        public SourceFile(
-            string source,
-            string fullPath,
-            bool skip,
-            string reason,
-            string code)
+        return BuildTestExecutor(file, _currentAgentManager);
+    }
+
+    private static void CleanupAgentManager()
+    {
+        _currentAgentManager?.Dispose();
+        _currentAgentManager = null;
+    }
+
+    private static void ExecuteTest(Engine engine, Test262File file)
+    {
+        try
         {
-            Skip = skip;
-            Source = source;
-            Reason = reason;
-            FullPath = fullPath;
-            Code = code;
+            if (file.Type == ProgramType.Module)
+            {
+                var specifier = "./" + Path.GetFileName(file.FileName);
+                engine.Modules.Add(specifier, builder => builder.AddSource(file.Program));
+                engine.Modules.Import(specifier);
+            }
+            else
+            {
+                var script = Engine.PrepareScript(file.Program, source: file.FileName, options: new ScriptPreparationOptions
+                {
+                    ParsingOptions = ScriptParsingOptions.Default with { Tolerant = false, AllowReturnOutsideFunction = false },
+                });
+
+                engine.Execute(script);
+            }
+
+            // For async tests, drain the event loop and validate completion markers
+            if (file.Flags.Contains("async"))
+            {
+                WaitForAsyncTestCompletion(engine);
+            }
+        }
+        catch (Exception ex) when (file.NegativeTestCase is not null)
+        {
+            ValidateNegativeTestError(file, ex);
+            throw; // Re-throw so the outer RunTestCode handler sees the exception as expected
+        }
+        finally
+        {
+            // Cleanup agent manager after test execution
+            CleanupAgentManager();
+        }
+    }
+
+    /// <summary>
+    /// Validates that the caught exception matches the expected error type for negative tests.
+    /// Uses Assert.Fail to record test failure if the error type doesn't match; this is recorded
+    /// in the NUnit test context even if the outer catch in RunTestCode swallows the exception.
+    /// </summary>
+    private static void ValidateNegativeTestError(Test262File file, Exception ex)
+    {
+        var expected = file.NegativeTestCase!.Type;
+        var actual = GetActualErrorType(ex);
+
+        // null means infrastructure exception (TimeoutException, etc.) - skip validation
+        if (actual is not null && actual.Value != expected)
+        {
+            Assert.Fail($"Expected {expected} but got {actual.Value}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Maps a Jint exception to a Test262 ExpectedErrorType.
+    /// Returns null only for truly unknown/infrastructure exceptions (TimeoutException, etc.)
+    /// where we can't determine the JS error type and should not fail the validation.
+    /// </summary>
+    private static ExpectedErrorType? GetActualErrorType(Exception ex)
+    {
+        switch (ex)
+        {
+            case ScriptPreparationException:
+                return ExpectedErrorType.SyntaxError;
+
+            case JavaScriptException jsEx:
+                return GetErrorTypeFromJsError(jsEx.Error);
+
+            // Internal Jint exceptions that bypass JavaScriptException
+            case Jint.Runtime.SyntaxErrorException:
+                return ExpectedErrorType.SyntaxError;
+
+            // Acornima parser SyntaxErrorException (e.g. from module resolution)
+            case Acornima.SyntaxErrorException:
+                return ExpectedErrorType.SyntaxError;
+
+            case TypeErrorException:
+                return ExpectedErrorType.TypeError;
+
+            case RangeErrorException:
+                return ExpectedErrorType.RangeError;
+
+            default:
+                // Infrastructure exceptions (TimeoutException, etc.) - don't validate
+                return null;
+        }
+    }
+
+    /// <summary>
+    /// Determines the error type from a JavaScript error value by checking the "name" property.
+    /// For non-object errors (e.g., thrown strings from $DONOTEVALUATE), returns Test262Error
+    /// since a non-typed throw should not match any specific expected error type.
+    /// </summary>
+    private static ExpectedErrorType? GetErrorTypeFromJsError(JsValue error)
+    {
+        if (error is not ObjectInstance oi)
+        {
+            // Non-object throw (e.g., `throw "string"`) - treat as Test262Error
+            // so it won't match SyntaxError/TypeError/etc. expectations
+            return ExpectedErrorType.Test262Error;
         }
 
-        public string Source { get; set; }
-        public bool Skip { get; set; }
-        public string Reason { get; set; }
-        public string FullPath { get; set; }
-        public string Code { get; set; }
-
-        public void Deserialize(IXunitSerializationInfo info)
+        var name = oi.Get("name");
+        if (name.IsUndefined() || name.IsNull())
         {
-            Skip = info.GetValue<bool>(nameof(Skip));
-            Source = info.GetValue<string>(nameof(Source));
-            Reason = info.GetValue<string>(nameof(Reason));
-            FullPath = info.GetValue<string>(nameof(FullPath));
-            Code = info.GetValue<string>(nameof(Code));
+            return ExpectedErrorType.Test262Error;
         }
 
-        public void Serialize(IXunitSerializationInfo info)
+        return name.ToString() switch
         {
-            info.AddValue(nameof(Skip), Skip);
-            info.AddValue(nameof(Source), Source);
-            info.AddValue(nameof(Reason), Reason);
-            info.AddValue(nameof(FullPath), FullPath);
-            info.AddValue(nameof(Code), Code);
+            "SyntaxError" => ExpectedErrorType.SyntaxError,
+            "TypeError" => ExpectedErrorType.TypeError,
+            "ReferenceError" => ExpectedErrorType.ReferenceError,
+            "RangeError" => ExpectedErrorType.RangeError,
+            "EvalError" => ExpectedErrorType.EvalError,
+            "URIError" => ExpectedErrorType.URIError,
+            "Test262Error" => ExpectedErrorType.Test262Error,
+            _ => ExpectedErrorType.Test262Error
+        };
+    }
+
+    /// <summary>
+    /// Drains the event loop until $DONE is called (producing Test262:AsyncTestComplete or
+    /// Test262:AsyncTestFailure marker via print), then validates the result.
+    /// See https://github.com/nicolo-ribaudo/tc39-proposal-test262-spec/blob/main/spec.md
+    /// </summary>
+    private static void WaitForAsyncTestCompletion(Engine engine)
+    {
+        if (_asyncResult is null)
+        {
+            var eventLoop = engine.EventLoop;
+            var previousWaitingThreadId = eventLoop._waitingThreadId;
+            eventLoop._waitingThreadId = Environment.CurrentManagedThreadId;
+
+            try
+            {
+                var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
+
+                while (_asyncResult is null)
+                {
+                    engine.RunAvailableContinuations();
+
+                    if (_asyncResult is not null)
+                    {
+                        break;
+                    }
+
+                    if (DateTime.UtcNow >= deadline)
+                    {
+                        throw new TimeoutException("Async test did not complete - $DONE was not called");
+                    }
+
+                    // Poll with short interval for callbacks arriving from setTimeout/promise resolution
+                    Thread.Sleep(10);
+                }
+            }
+            finally
+            {
+                eventLoop._waitingThreadId = previousWaitingThreadId;
+            }
         }
 
-        public override string ToString()
+        // Validate the async test result
+        if (_asyncResult!.StartsWith("Test262:AsyncTestFailure:", StringComparison.Ordinal))
         {
-            return Source;
+            throw new Exception(_asyncResult["Test262:AsyncTestFailure:".Length..]);
         }
+
+        if (_asyncResult != "Test262:AsyncTestComplete")
+        {
+            throw new Exception($"Unexpected async test result: {_asyncResult}");
+        }
+    }
+
+    private partial bool ShouldThrow(Test262File testCase, bool strict)
+    {
+        return testCase.Negative;
     }
 }

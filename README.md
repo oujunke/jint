@@ -6,20 +6,24 @@
 
 # Jint
 
-Jint is a __Javascript interpreter__ for .NET which can run on __any modern .NET platform__ as it supports .NET Standard 2.0 and .NET 4.6.1 targets (and up). Because Jint neither generates any .NET bytecode nor uses the DLR it runs relatively small scripts really fast.
+Jint is a __Javascript interpreter__ for .NET which can run on __any modern .NET platform__ as it supports .NET Standard 2.0 and .NET 4.6.2 targets (and later).
 
-💡 You should prefer 3.x beta over the 2.x legacy version as all new features and improvements are targeted against version 3.x.
+## Use cases and users
 
-## ECMAScipt Features
+- Run JavaScript inside your .NET application in a safe sand-boxed environment
+- Expose native .NET objects and functions to your JavaScript code (get database query results as JSON, call .NET methods, etc.)
+- Support scripting in your .NET application, allowing users to customize your application using JavaScript (like Unity games) 
 
-### Version 2.x
+Some users of Jint include 
+[RavenDB](https://github.com/ravendb/ravendb), 
+[EventStore](https://github.com/EventStore/EventStore), 
+[OrchardCore](https://github.com/OrchardCMS/OrchardCore), 
+[ELSA Workflows](https://github.com/elsa-workflows/elsa-core),
+[docfx](https://github.com/dotnet/docfx), 
+[JavaScript Engine Switcher](https://github.com/Taritsyn/JavaScriptEngineSwitcher),
+and many more.
 
--  ✔ Full support for [ECMAScript 5.1 (ES5)](http://www.ecma-international.org/ecma-262/5.1/)
-- .NET Interoperability 
-
-### Version 3.x
-
-The entire execution engine was rebuild with performance in mind, in many cases at least twice as fast as the old engine.  All the features of 2.x and more:
+## Supported features
 
 #### ECMAScript 2015 (ES6)
 
@@ -32,7 +36,7 @@ The entire execution engine was rebuild with performance in mind, in many cases 
 - ✔ Default, rest and spread
 - ✔ Enhanced object literals
 - ✔ `for...of`
-- ❌ Generators
+- ✔ Generators
 - ✔ Template strings
 - ✔ Lexical scoping of variables (let and const)
 - ✔ Map and Set
@@ -49,7 +53,7 @@ The entire execution engine was rebuild with performance in mind, in many cases 
 #### ECMAScript 2016
 
 - ✔ `Array.prototype.includes`
-- ❌ `await`, `async`
+- ✔ `await`, `async`
 - ✔ Block-scoping of variables and functions
 - ✔ Exponentiation operator `**`
 - ✔ Destructuring patterns (of variables)
@@ -57,11 +61,15 @@ The entire execution engine was rebuild with performance in mind, in many cases 
 ####  ECMAScript 2017
 
 - ✔ `Object.values`, `Object.entries` and `Object.getOwnPropertyDescriptors`
+- ✔ Shared memory and atomics
 
 #### ECMAScript 2018
 
+- ✔ Asynchronous iteration
 - ✔ `Promise.prototype.finally`
-- ✔ Rest/spread operators for object literals (`...identifier`),
+- ✔ RegExp named capture groups
+- ✔ Rest/spread operators for object literals (`...identifier`)
+- ✔ SharedArrayBuffer
 
 #### ECMAScript 2019
 
@@ -74,30 +82,96 @@ The entire execution engine was rebuild with performance in mind, in many cases 
 #### ECMAScript 2020
 
 - ✔ `BigInt`
-- ❌ `export * as ns from`
+- ✔ `export * as ns from`
 - ✔ `for-in` enhancements
 - ✔ `globalThis` object
 - ✔ `import`
-- ❌ `import.meta`
+- ✔ `import.meta`
 - ✔ Nullish coalescing operator (`??`)
 - ✔ Optional chaining
-- ❌ `Promise.allSettled`
+- ✔ `Promise.allSettled`
 - ✔ `String.prototype.matchAll`
 
 #### ECMAScript 2021
 
 - ✔ Logical Assignment Operators (`&&=` `||=` `??=`)
 - ✔ Numeric Separators (`1_000`)
-- ❌ `Promise.any` and `AggregateError`
-- ❌ `String.prototype.replaceAll`
-- ❌ `WeakRef` and `FinalizationRegistry`
+- ✔ `AggregateError`
+- ✔ `Promise.any` 
+- ✔ `String.prototype.replaceAll`
+- ✔ `WeakRef` 
+- ✔ `FinalizationRegistry`
+
+#### ECMAScript 2022
+
+- ✔ Class Fields
+- ✔ RegExp Match Indices
+- ✔ Top-level await
+- ✔ Ergonomic brand checks for Private Fields
+- ✔ `.at()`
+- ✔ Accessible `Object.prototype.hasOwnProperty` (`Object.hasOwn`)
+- ✔ Class Static Block
+- ✔ Error Cause
+
+#### ECMAScript 2023
+
+- ✔ Array find from last
+- ✔ Change Array by copy
+- ✔ Hashbang Grammar
+- ✔ Symbols as WeakMap keys
+
+#### ECMAScript 2024
+
+- ✔ ArrayBuffer enhancements - `ArrayBuffer.prototype.resize` and `ArrayBuffer.prototype.transfer`
+- ✔ `Atomics.waitAsync` 
+- ✔ Ensuring that strings are well-formed - `String.prototype.ensureWellFormed` and `String.prototype.isWellFormed`
+- ✔ Grouping synchronous iterables - `Object.groupBy` and `Map.groupBy`
+- ✔ `Promise.withResolvers`
+- ❌ Regular expression flag `/v`
+
+#### ECMAScript 2025
+
+- ✔ 16-bit floating point numbers (float16), Requires NET 8 or higher, `Float16Array`, `Math.f16round()`
+- ✔ Array.fromAsync
+- ✔ Import attributes
+- ✔ Iterator helper methods 
+- ✔ JSON modules
+- ✔ `Promise.try`
+- ✔ `RegExp.escape()`
+- ❌ Regular expression pattern modifiers (inline flags)
+- ❌ Duplicate named capture groups
+- ✔ Set methods (`intersection`, `union`, `difference`, `symmetricDifference`, `isSubsetOf`, `isSupersetOf`, `isDisjointFrom`)
+
+#### ECMAScript proposals (no version yet)
+
+- ✔ Await Dictionary (`Promise.allKeyed`, `Promise.allSettledKeyed`)
+- ✔ Decorators (`@decorator` syntax for classes, methods, fields, and accessors)
+- ✔ `Error.isError`
+- ✔ Explicit Resource Management (`using` and `await using`)
+- ✔ Immutable Arraybuffers
+- ✔ Import Bytes (`import x from './file' with { type: 'bytes' }`)
+- ✔ Iterator Sequencing
+- ✔ Joint Iteration
+- ✔ JSON.parse source text access
+- ✔ `Math.sumPrecise`
+- ✔ `ShadowRealm`
+- ✔ `Temporal`
+- ✔ `Uint8Array` to/from base64
+- ✔ `Upsert`
 
 #### Other
 
 - Further refined .NET CLR interop capabilities
 - Constraints for execution (recursion, memory usage, duration)
 
-> Follow new features as they are being implemented, see https://github.com/sebastienros/jint/issues/343
+
+## Performance
+
+- Because Jint neither generates any .NET bytecode nor uses the DLR it runs relatively small scripts really fast
+- If you repeatedly run the same script, you should cache the `Script` or `Module` instance produced by Esprima and feed it to Jint instead of the content string
+- You should prefer running engine in strict mode, it improves performance
+
+You can check out [the engine comparison results](Jint.Benchmark), bear in mind that every use case is different and benchmarks might not reflect your real-world usage.
 
 ## Discussion
 
@@ -107,8 +181,11 @@ Join the chat on [Gitter](https://gitter.im/sebastienros/jint) or post your ques
 
 Here is a short video of how Jint works and some sample usage
 
-https://channel9.msdn.com/Shows/Code-Conversations/Sebastien-Ros-on-jint-a-Javascript-Interpreter-for-NET
+https://docs.microsoft.com/shows/code-conversations/sebastien-ros-on-jint-javascript-interpreter-net
 
+## Thread-safety
+
+Engine instances are not thread-safe and they should not accessed from multiple threads simultaneously. 
 
 ## Examples
 
@@ -151,11 +228,9 @@ Assert.AreEqual("Minnie", p.Name);
 
 You can invoke JavaScript function reference
 ```c#
-var add = new Engine()
+var result = new Engine()
     .Execute("function add(a, b) { return a + b; }")
-    .GetValue("add");
-
-add.Invoke(1, 2); // -> 3
+    .Invoke("add",1, 2); // -> 3
 ```
 or directly by name 
 ```c#
@@ -200,7 +275,7 @@ jint> log(bar.ToString());
 
 adding a specific CLR type reference can be done like this
 ```csharp
-engine.SetValue("TheType", TypeReference.CreateTypeReference(engine, typeof(TheType)))
+engine.SetValue("TheType", TypeReference.CreateTypeReference<TheType>(engine));
 ```
 
 and used this way
@@ -250,7 +325,7 @@ You can configure them via the options:
 ```c#
 var engine = new Engine(options => {
 
-    // Limit memory allocations to MB
+    // Limit memory allocations to 4 MB
     options.LimitMemory(4_000_000);
 
     // Set a timeout to 4 seconds.
@@ -264,29 +339,29 @@ var engine = new Engine(options => {
 }
 ```
 
-You can also write a custom constraint by implementing the `IConstraint` interface:
+You can also write a custom constraint by deriving from the `Constraint` base class:
 
 ```c#
-public interface IConstraint
+public abstract class Constraint
 {
-    /// Called before a script is run and useful when you us an engine object for multiple executions.
-    void Reset();
+    /// Called before script is run and useful when you use an engine object for multiple executions.
+    public abstract void Reset();
 
-    // Called before each statement to check if your requirements are met.
-    void Check();
+    // Called before each statement to check if your requirements are met; if not - throws an exception.
+    public abstract void Check();
 }
 ```
 
 For example we can write a constraint that stops scripts when the CPU usage gets too high:
 
 ```c#
-class MyCPUConstraint : IConstraint
+class MyCPUConstraint : Constraint
 {
-    public void Reset()
+    public override void Reset()
     {
     }
 
-    public void Check()
+    public override void Check()
     {
         var cpuUsage = GetCPUUsage();
 
@@ -303,15 +378,15 @@ var engine = new Engine(options =>
 });
 ```
 
-When you reuse the engine you want to use cancellation tokens you have to reset the token before each call of `Execute`:
+When you reuse the engine and want to use cancellation tokens you have to reset the token before each call of `Execute`:
 
 ```c#
-var constraint = new CancellationConstraint();
-
 var engine = new Engine(options =>
 {
-    options.Constraint(constraint);
+    options.CancellationToken(new CancellationToken(true));
 });
+
+var constraint = engine.Constraints.Find<CancellationConstraint>();
 
 for (var i = 0; i < 10; i++) 
 {
@@ -333,9 +408,9 @@ You can use modules to `import` and `export` variables from multiple script file
 var engine = new Engine(options =>
 {
     options.EnableModules(@"C:\Scripts");
-})
+});
 
-var ns = engine.ImportModule("./my-module.js");
+var ns = engine.Modules.Import("./my-module.js");
 
 var value = ns.Get("value").AsString();
 ```
@@ -345,9 +420,9 @@ By default, the module resolution algorithm will be restricted to the base path 
 Defining modules using JavaScript source code:
 
 ```c#
-engine.CreateModule("user", "export const name = 'John';")
+engine.Modules.Add("user", "export const name = 'John';");
 
-var ns = engine.ImportModule("user");
+var ns = engine.Modules.Import("user");
 
 var name = ns.Get("name").AsString();
 ```
@@ -356,26 +431,125 @@ Defining modules using the module builder, which allows you to export CLR classe
 
 ```c#
 // Create the module 'lib' with the class MyClass and the variable version
-engine.CreateModule("lib", builder => builder
+engine.Modules.Add("lib", builder => builder
     .ExportType<MyClass>()
     .ExportValue("version", 15)
 );
 
 // Create a user-defined module and do something with 'lib'
-engine.CreateModule("custom", @"
+engine.Modules.Add("custom", @"
     import { MyClass, version } from 'lib';
     const x = new MyClass();
-    export const result as x.doSomething();
+    export const result = x.doSomething();
 ");
 
 // Import the user-defined module; this will execute the import chain
-var ns = engine.ImportModule("custom");
+var ns = engine.Modules.Import("custom");
 
 // The result contains "live" bindings to the module
 var id = ns.Get("result").AsInteger();
 ```
 
-Note that you don't need to `EnableModules` if you only use modules created using `AddModule`.
+Note that you don't need to `EnableModules` if you only use modules created using `Engine.Modules.Add`.
+
+## Asynchronous Execution
+
+Jint supports non-blocking execution of JavaScript that involves `async`/`await` and Promises. This is important in ASP.NET Core and other environments where blocking a thread while waiting for I/O can cause thread-pool exhaustion.
+
+### EvaluateAsync / ExecuteAsync / InvokeAsync
+
+Use `EvaluateAsync` when you want to evaluate JavaScript code that may return a Promise (e.g., an `async` function call). The method awaits Promise settlement without blocking any thread — the calling thread is released back to the pool while I/O is in flight:
+
+```c#
+var engine = new Engine();
+
+// Expose an async .NET method to JavaScript
+engine.SetValue("fetchData", new Func<string, Task<string>>(async url =>
+{
+    using var client = new HttpClient();
+    return await client.GetStringAsync(url);
+}));
+
+// EvaluateAsync properly awaits the Promise returned by the async IIFE
+var result = await engine.EvaluateAsync("""
+    (async () => {
+        const data = await fetchData('https://example.com/api');
+        return data;
+    })()
+    """);
+
+Console.WriteLine(result.AsString());
+```
+
+`ExecuteAsync` and `InvokeAsync` follow the same pattern:
+
+```c#
+// Execute a script that may produce a Promise and await its completion
+await engine.ExecuteAsync("async function init() { ... } init()");
+
+// Invoke a named async function and await its result
+var value = await engine.InvokeAsync("myAsyncFunction", arg1, arg2);
+```
+
+By default, async execution respects `Options.Constraints.PromiseTimeout`. You can also pass a `CancellationToken`:
+
+```c#
+using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+var result = await engine.EvaluateAsync("(async () => await fetchData(url))()", cancellationToken: cts.Token);
+```
+
+### UnwrapIfPromiseAsync
+
+When you already hold a `JsValue` that may be a Promise — for example returned from `engine.Invoke(...)`, `value.Call(...)`, or a property access — use `UnwrapIfPromiseAsync` to await it without blocking:
+
+```c#
+// Obtain a JsValue that may be a Promise
+var jsValue = engine.Invoke("computeAsync", someArg);
+
+// Await it asynchronously (non-blocking)
+var result = await jsValue.UnwrapIfPromiseAsync();
+
+// With cancellation support
+using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+var result = await jsValue.UnwrapIfPromiseAsync(cts.Token);
+```
+
+If `jsValue` is not a Promise it is returned immediately. If it is a rejected Promise a `PromiseRejectedException` is thrown.
+
+The synchronous `UnwrapIfPromise` is still available for scenarios where blocking is acceptable (e.g., CPU-bound scripts with no I/O), but `UnwrapIfPromiseAsync` should be preferred in any `async` call chain.
+
+### Task/ValueTask to Promise Interop (Experimental)
+
+When the `TaskInterop` experimental feature is enabled, .NET `Task` and `ValueTask` return values are automatically converted to JavaScript Promises. This allows JavaScript code to `await` or `.then()` the results of .NET async methods without any manual wrapping:
+
+```c#
+var engine = new Engine(options =>
+{
+    options.ExperimentalFeatures = ExperimentalFeature.TaskInterop;
+});
+
+engine.SetValue("fetchData", new Func<string, Task<string>>(async url =>
+{
+    using var client = new HttpClient();
+    return await client.GetStringAsync(url);
+}));
+
+// .NET Task is automatically converted to a JavaScript Promise
+var result = engine.Evaluate("fetchData('https://example.com/api').then(data => data)");
+result = result.UnwrapIfPromise();
+```
+
+Without `TaskInterop`, .NET Tasks passed to JavaScript are exposed as opaque CLR objects. With it enabled, they become native Promises that support `await`, `.then()`, and `.catch()`.
+
+You can configure the timeout for promise resolution via `Options.Constraints.PromiseTimeout`:
+
+```c#
+var engine = new Engine(options =>
+{
+    options.ExperimentalFeatures = ExperimentalFeature.TaskInterop;
+    options.Constraints.PromiseTimeout = TimeSpan.FromSeconds(10);
+});
+```
 
 ## .NET Interoperability
 
@@ -394,7 +568,7 @@ Note that you don't need to `EnableModules` if you only use modules created usin
   - number -> double
   - string -> string
   - boolean -> bool
-  - Regex -> RegExp
+  - RegExp -> Regex
   - Function -> Delegate
 - Extensions methods
 
@@ -413,5 +587,3 @@ The following features provide you with a secure, sand-boxed environment to run 
 - The recommended branch is __main__, any PR should target this branch
 - The __main__ branch is automatically built and published on [MyGet](https://www.myget.org/feed/Packages/jint). Add this feed to your NuGet sources to use it: https://www.myget.org/F/jint/api/v3/index.json
 - The __main__ branch is occasionally published on [NuGet](https://www.nuget.org/packages/jint)
-- The 3.x releases have more features (from es6) and is faster than the 2.x ones. They run the same test suite so they are as reliable. For instance [RavenDB](https://github.com/ravendb/ravendb) is using the 3.x version.
-- The 3.x versions are marked as _beta_ as they might get breaking changes while es6 features are added.

@@ -1,59 +1,79 @@
-using Esprima.Ast;
 using Jint.Native;
 using Jint.Runtime.Interpreter.Expressions;
 
-namespace Jint.Runtime.Interpreter.Statements
+namespace Jint.Runtime.Interpreter.Statements;
+
+/// <summary>
+/// http://www.ecma-international.org/ecma-262/5.1/#sec-12.6.1
+/// </summary>
+internal sealed class JintDoWhileStatement : JintStatement<DoWhileStatement>
 {
-    /// <summary>
-    /// http://www.ecma-international.org/ecma-262/5.1/#sec-12.6.1
-    /// </summary>
-    internal sealed class JintDoWhileStatement : JintStatement<DoWhileStatement>
+    private readonly ProbablyBlockStatement _body;
+    private readonly string? _labelSetName;
+    private readonly JintExpression _test;
+
+    public JintDoWhileStatement(DoWhileStatement statement) : base(statement)
     {
-        private JintStatement _body;
-        private string _labelSetName;
-        private JintExpression _test;
+        _body = new ProbablyBlockStatement(statement.Body);
+        _test = JintExpression.Build(statement.Test);
+        _labelSetName = statement.LabelSet?.Name;
+    }
 
-        public JintDoWhileStatement(DoWhileStatement statement) : base(statement)
+    protected override Completion ExecuteInternal(EvaluationContext context)
+    {
+        JsValue v = JsValue.Undefined;
+        bool iterating;
+
+        do
         {
-        }
+            context.Engine.ExecutionContext.ClearCompletedAwaitsIfNotResuming();
 
-        protected override void Initialize(EvaluationContext context)
-        {
-            _body = Build(_statement.Body);
-            _test = JintExpression.Build(context.Engine, _statement.Test);
-            _labelSetName = _statement.LabelSet?.Name;
-        }
-
-        protected override Completion ExecuteInternal(EvaluationContext context)
-        {
-            JsValue v = Undefined.Instance;
-            bool iterating;
-
-            do
+            var completion = _body.Execute(context);
+            if (!completion.Value.IsEmpty)
             {
-                var completion = _body.Execute(context);
-                if (!ReferenceEquals(completion.Value, null))
+                v = completion.Value;
+            }
+
+            // Check for generator suspension - if the generator is suspended, we need to exit the loop
+            if (context.IsSuspended())
+            {
+                var generator = context.Engine.ExecutionContext.Generator;
+                var suspendedValue = generator?._suspendedValue ?? completion.Value;
+                return new Completion(CompletionType.Return, suspendedValue, _statement);
+            }
+
+            if (completion.Type != CompletionType.Continue || !string.Equals(context.Target, _labelSetName, StringComparison.Ordinal))
+            {
+                if (completion.Type == CompletionType.Break && (context.Target == null || string.Equals(context.Target, _labelSetName, StringComparison.Ordinal)))
                 {
-                    v = completion.Value;
+                    return new Completion(CompletionType.Normal, v, _statement);
                 }
 
-                if (completion.Type != CompletionType.Continue || completion.Target != _labelSetName)
+                if (completion.Type != CompletionType.Normal)
                 {
-                    if (completion.Type == CompletionType.Break && (completion.Target == null || completion.Target == _labelSetName))
-                    {
-                        return new Completion(CompletionType.Normal, v, null, Location);
-                    }
-
-                    if (completion.Type != CompletionType.Normal)
-                    {
-                        return completion;
-                    }
+                    return completion;
                 }
+            }
 
-                iterating = TypeConverter.ToBoolean(_test.GetValue(context).Value);
-            } while (iterating);
+            if (context.DebugMode)
+            {
+                context.Engine.Debugger.OnStep(_test._expression);
+            }
 
-            return NormalCompletion(v);
-        }
+            var testValue = _test.GetValue(context);
+
+            // Check for async/generator suspension after evaluating the test expression
+            if (context.IsSuspended())
+            {
+                var generator = context.Engine.ExecutionContext.Generator;
+                var asyncFn = context.Engine.ExecutionContext.AsyncFunction;
+                var suspendedValue = generator?._suspendedValue ?? asyncFn?._resumeValue ?? JsValue.Undefined;
+                return new Completion(CompletionType.Return, suspendedValue, _statement);
+            }
+
+            iterating = TypeConverter.ToBoolean(testValue);
+        } while (iterating);
+
+        return new Completion(CompletionType.Normal, v, ((JintStatement) this)._statement);
     }
 }

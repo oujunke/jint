@@ -1,39 +1,110 @@
-#nullable enable
-
-using Esprima.Ast;
 using Jint.Native;
+using Jint.Native.Object;
 using Jint.Native.Promise;
+using Jint.Runtime.Modules;
 
 namespace Jint.Runtime.Interpreter.Expressions;
 
 internal sealed class JintImportExpression : JintExpression
 {
-    private JintExpression _importExpression;
+    private readonly JintExpression _specifierExpression;
+    private readonly JintExpression? _optionsExpression;
 
-    public JintImportExpression(Import expression) : base(expression)
+    public JintImportExpression(ImportExpression expression) : base(expression)
     {
-        _initialized = false;
-        _importExpression = null!;
-    }
-
-    protected override void Initialize(EvaluationContext context)
-    {
-        var expression = ((Import) _expression).Source;
-        _importExpression = Build(context.Engine, expression!);
+        _specifierExpression = Build(expression.Source);
+        _optionsExpression = expression.Options is not null ? Build(expression.Options) : null;
     }
 
     /// <summary>
-    /// https://tc39.es/ecma262/#sec-import-calls
+    /// https://tc39.es/proposal-import-attributes/#sec-evaluate-import-call
     /// </summary>
-    protected override ExpressionResult EvaluateInternal(EvaluationContext context)
+    protected override object EvaluateInternal(EvaluationContext context)
     {
-        var referencingScriptOrModule = context.Engine.GetActiveScriptOrModule();
-        var argRef = _importExpression.Evaluate(context);
-        var specifier = context.Engine.GetValue(argRef.Value); //.UnwrapIfPromise();
+        var referrer = context.Engine.GetActiveScriptOrModule();
+        var specifier = _specifierExpression.GetValue(context); //.UnwrapIfPromise();
+        if (context.IsGeneratorAborted())
+        {
+            return specifier;
+        }
+
+        var options = _optionsExpression?.GetValue(context) ?? JsValue.Undefined;
+        if (context.IsGeneratorAborted())
+        {
+            return options;
+        }
+
         var promiseCapability = PromiseConstructor.NewPromiseCapability(context.Engine, context.Engine.Realm.Intrinsics.Promise);
-        var specifierString = TypeConverter.ToString(specifier);
-        context.Engine._host.ImportModuleDynamically(referencingScriptOrModule, specifierString, promiseCapability);
-        context.Engine.RunAvailableContinuations();
-        return NormalCompletion(promiseCapability.PromiseInstance);
+
+        try
+        {
+            var specifierString = TypeConverter.ToString(specifier);
+
+            var attributes = new List<ModuleImportAttribute>();
+            if (!options.IsUndefined())
+            {
+                if (!options.IsObject())
+                {
+                    Throw.TypeError(context.Engine.Realm, "Invalid options object");
+                    return JsValue.Undefined;
+                }
+
+                var attributesObj = options.Get("with");
+                if (!attributesObj.IsUndefined())
+                {
+                    if (attributesObj is not ObjectInstance oi)
+                    {
+                        Throw.TypeError(context.Engine.Realm, "Invalid options.with object");
+                        return JsValue.Undefined;
+                    }
+
+                    var entries = oi.EnumerableOwnProperties(ObjectInstance.EnumerableOwnPropertyNamesKind.KeyValue);
+                    attributes.Capacity = (int) entries.GetLength();
+                    foreach (var entry in entries)
+                    {
+                        var key = entry.Get("0");
+                        var value = entry.Get("1");
+
+                        if (!value.IsString())
+                        {
+                            Throw.TypeError(context.Engine.Realm, "Invalid option value " + value);
+                            return JsValue.Undefined;
+                        }
+
+                        attributes.Add(new ModuleImportAttribute(key.ToString(), TypeConverter.ToString(value)));
+                    }
+
+                    if (!AllImportAttributesSupported(context.Engine._host, attributes))
+                    {
+                        Throw.TypeError(context.Engine.Realm, "Unsupported import attributes detected");
+                    }
+
+                    attributes.Sort(static (item1, item2) => StringComparer.Ordinal.Compare(item1.Key, item2.Key));
+                }
+            }
+
+            var moduleRequest = new ModuleRequest(Specifier: specifierString, Attributes: attributes.ToArray());
+            context.Engine._host.LoadImportedModule(referrer, moduleRequest, promiseCapability);
+        }
+        catch (JavaScriptException e)
+        {
+            promiseCapability.Reject.Call(JsValue.Undefined, e.Error);
+        }
+
+        return promiseCapability.PromiseInstance;
+    }
+
+    private static bool AllImportAttributesSupported(Host host, List<ModuleImportAttribute> attributes)
+    {
+        var supported = host.GetSupportedImportAttributes();
+        foreach (var pair in attributes)
+        {
+            if (!supported.Contains(pair.Key))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 }

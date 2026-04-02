@@ -1,340 +1,974 @@
-using System;
-using System.Collections.Generic;
-using Esprima.Ast;
+using System.Runtime.CompilerServices;
 using Jint.Native;
 using Jint.Native.Function;
+using Jint.Native.AsyncFunction;
+using Jint.Native.AsyncGenerator;
+using Jint.Native.Generator;
+using Jint.Native.Promise;
+using Jint.Runtime.Environments;
 using Jint.Runtime.Interpreter.Expressions;
 
-namespace Jint.Runtime.Interpreter
+namespace Jint.Runtime.Interpreter;
+
+/// <summary>
+/// Works as memento for function execution. Optimization to cache things that don't change.
+/// </summary>
+internal sealed class JintFunctionDefinition
 {
-    /// <summary>
-    /// Works as memento for function execution. Optimization to cache things that don't change.
-    /// </summary>
-    internal sealed class JintFunctionDefinition
+    private JintExpression? _bodyExpression;
+    private JintStatementList? _bodyStatementList;
+
+    public readonly string? Name;
+    public readonly IFunction Function;
+
+    public JintFunctionDefinition(IFunction function)
     {
-        private readonly Engine _engine;
+        Function = function;
+        Name = !string.IsNullOrEmpty(function.Id?.Name) ? function.Id!.Name : null;
+    }
 
-        private JintExpression _bodyExpression;
-        private JintStatementList _bodyStatementList;
+    public bool Strict => Function.IsStrict();
 
-        public readonly string Name;
-        public readonly bool Strict;
-        public readonly IFunction Function;
+    public FunctionThisMode ThisMode => Function.IsStrict() ? FunctionThisMode.Strict : FunctionThisMode.Global;
 
-        private State _state;
-
-        public JintFunctionDefinition(
-            Engine engine,
-            IFunction function)
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-ordinarycallevaluatebody
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining | (MethodImplOptions) 512)]
+    internal Completion EvaluateBody(EvaluationContext context, Function functionObject, JsCallArguments argumentsList)
+    {
+        Completion result;
+        JsArguments? argumentsInstance = null;
+        if (Function.Body is not FunctionBody)
         {
-            _engine = engine;
-            Function = function;
-            Name = !string.IsNullOrEmpty(function.Id?.Name) ? function.Id.Name : null;
-            Strict = function.Strict;
-        }
-
-        public FunctionThisMode ThisMode => Strict || _engine._isStrict ? FunctionThisMode.Strict : FunctionThisMode.Global;
-
-        internal Completion Execute(EvaluationContext context)
-        {
-            if (Function.Expression)
+            // https://tc39.es/ecma262/#sec-runtime-semantics-evaluateconcisebody
+            _bodyExpression ??= JintExpression.Build((Expression) Function.Body);
+            if (Function.Async)
             {
-                _bodyExpression ??= JintExpression.Build(_engine, (Expression) Function.Body);
-                var jsValue = _bodyExpression?.GetValue(context).Value ?? Undefined.Instance;
-                return new Completion(CompletionType.Return, jsValue, Function.Body.Location);
-            }
+                // local copies to prevent capturing closure created on top of method
+                var function = functionObject;
+                var jsValues = argumentsList;
 
-            var blockStatement = (BlockStatement) Function.Body;
-            _bodyStatementList ??= new JintStatementList(blockStatement, blockStatement.Body);
-            if (InterceptHelper.Intercept(InterceptHelper.InterceptType.JintFunctionDefinitionBefore, new object[] { Name, Function, context, _bodyStatementList }) is Completion completion)
-            {
-                return completion;
-            }
-            return _bodyStatementList.Execute(context);
-        }
-
-        internal State Initialize(FunctionInstance functionInstance)
-        {
-            return _state ??= DoInitialize(functionInstance);
-        }
-
-        internal sealed class State
-        {
-            public bool HasRestParameter;
-            public int Length;
-            public Key[] ParameterNames;
-            public bool HasDuplicates;
-            public bool IsSimpleParameterList;
-            public bool HasParameterExpressions;
-            public bool ArgumentsObjectNeeded;
-            public List<Key> VarNames;
-            public LinkedList<JintFunctionDefinition> FunctionsToInitialize;
-            public readonly HashSet<Key> FunctionNames = new HashSet<Key>();
-            public LexicalVariableDeclaration[] LexicalDeclarations = Array.Empty<LexicalVariableDeclaration>();
-            public HashSet<Key> ParameterBindings;
-            public List<VariableValuePair> VarsToInitialize;
-
-            internal struct VariableValuePair
-            {
-                public Key Name;
-                public JsValue InitialValue;
-            }
-
-            internal struct LexicalVariableDeclaration
-            {
-                public bool IsConstantDeclaration;
-                public List<string> BoundNames;
-            }
-        }
-
-        private State DoInitialize(FunctionInstance functionInstance)
-        {
-            var state = new State();
-
-            ProcessParameters(Function, state, out var hasArguments);
-
-            var hoistingScope = HoistingScope.GetFunctionLevelDeclarations(Function, collectVarNames: true, collectLexicalNames: true);
-            var functionDeclarations = hoistingScope._functionDeclarations;
-            var lexicalNames = hoistingScope._lexicalNames;
-            state.VarNames = hoistingScope._varNames;
-
-            LinkedList<JintFunctionDefinition> functionsToInitialize = null;
-
-            if (functionDeclarations != null)
-            {
-                functionsToInitialize = new LinkedList<JintFunctionDefinition>();
-                for (var i = functionDeclarations.Count - 1; i >= 0; i--)
+                var promiseCapability = PromiseConstructor.NewPromiseCapability(context.Engine, context.Engine.Realm.Intrinsics.Promise);
+                // Expression bodies don't have a statement list (used only for resumption)
+                AsyncFunctionStart(context, promiseCapability, body: null, context =>
                 {
-                    var d = functionDeclarations[i];
-                    var fn = d.Id.Name;
-                    if (state.FunctionNames.Add(fn))
+                    context.Engine.FunctionDeclarationInstantiation(function, jsValues);
+                    context.RunBeforeExecuteStatementChecks(Function.Body);
+                    var jsValue = _bodyExpression.GetValue(context).Clone();
+
+                    // Check for async suspension - if suspended, return early to allow resumption
+                    if (context.IsSuspended())
                     {
-                        functionsToInitialize.AddFirst(new JintFunctionDefinition(_engine, d));
+                        return new Completion(CompletionType.Normal, jsValue, _bodyExpression._expression);
                     }
-                }
-            }
 
-            state.FunctionsToInitialize = functionsToInitialize;
-
-            const string ParameterNameArguments = "arguments";
-
-            state.ArgumentsObjectNeeded = true;
-            if (functionInstance._thisMode == FunctionThisMode.Lexical)
-            {
-                state.ArgumentsObjectNeeded = false;
-            }
-            else if (hasArguments)
-            {
-                state.ArgumentsObjectNeeded = false;
-            }
-            else if (!state.HasParameterExpressions)
-            {
-                if (state.FunctionNames.Contains(ParameterNameArguments)
-                    || lexicalNames?.Contains(ParameterNameArguments) == true)
-                {
-                    state.ArgumentsObjectNeeded = false;
-                }
-            }
-
-            var parameterBindings = new HashSet<Key>(state.ParameterNames);
-            if (state.ArgumentsObjectNeeded)
-            {
-                parameterBindings.Add(KnownKeys.Arguments);
-            }
-
-            state.ParameterBindings = parameterBindings;
-
-
-            var varsToInitialize = new List<State.VariableValuePair>();
-            if (!state.HasParameterExpressions)
-            {
-                var instantiatedVarNames = state.VarNames != null
-                    ? new HashSet<Key>(state.ParameterBindings)
-                    : new HashSet<Key>();
-
-                for (var i = 0; i < state.VarNames?.Count; i++)
-                {
-                    var n = state.VarNames[i];
-                    if (instantiatedVarNames.Add(n))
-                    {
-                        varsToInitialize.Add(new State.VariableValuePair
-                        {
-                            Name = n
-                        });
-                    }
-                }
+                    return new Completion(CompletionType.Return, jsValue, _bodyExpression._expression);
+                });
+                result = new Completion(CompletionType.Return, promiseCapability.PromiseInstance, Function.Body);
             }
             else
             {
-                var instantiatedVarNames = state.VarNames != null
-                    ? new HashSet<Key>(state.ParameterBindings)
-                    : null;
-
-                for (var i = 0; i < state.VarNames?.Count; i++)
-                {
-                    var n = state.VarNames[i];
-                    if (instantiatedVarNames.Add(n))
-                    {
-                        JsValue initialValue = null;
-                        if (!state.ParameterBindings.Contains(n) || state.FunctionNames.Contains(n))
-                        {
-                            initialValue = JsValue.Undefined;
-                        }
-
-                        varsToInitialize.Add(new State.VariableValuePair
-                        {
-                            Name = n,
-                            InitialValue = initialValue
-                        });
-                    }
-                }
+                argumentsInstance = context.Engine.FunctionDeclarationInstantiation(functionObject, argumentsList);
+                context.RunBeforeExecuteStatementChecks(Function.Body);
+                var jsValue = _bodyExpression.GetValue(context).Clone();
+                result = new Completion(CompletionType.Return, jsValue, Function.Body);
             }
-
-            state.VarsToInitialize = varsToInitialize;
-
-            if (hoistingScope._lexicalDeclarations != null)
-            {
-                var _lexicalDeclarations = hoistingScope._lexicalDeclarations;
-                var lexicalDeclarationsCount = _lexicalDeclarations.Count;
-                var declarations = new State.LexicalVariableDeclaration[lexicalDeclarationsCount];
-                for (var i = 0; i < lexicalDeclarationsCount; i++)
-                {
-                    var d = _lexicalDeclarations[i];
-                    var boundNames = new List<string>();
-                    d.GetBoundNames(boundNames);
-                    declarations[i] = new State.LexicalVariableDeclaration
-                    {
-                        IsConstantDeclaration = d.IsConstantDeclaration(),
-                        BoundNames = boundNames
-                    };
-                }
-                state.LexicalDeclarations = declarations;
-            }
-
-            return state;
         }
-
-        private static void GetBoundNames(
-            Expression parameter,
-            List<Key> target,
-            bool checkDuplicates,
-            ref bool _hasRestParameter,
-            ref bool _hasParameterExpressions,
-            ref bool _hasDuplicates,
-            ref bool hasArguments)
+        else if (Function.Generator)
         {
-            if (parameter is Identifier identifier)
+            result = Function.Async
+                ? EvaluateAsyncGeneratorBody(context, functionObject, argumentsList)
+                : EvaluateGeneratorBody(context, functionObject, argumentsList);
+        }
+        else
+        {
+            if (Function.Async)
             {
-                _hasDuplicates |= checkDuplicates && target.Contains(identifier.Name);
-                target.Add(identifier.Name);
-                hasArguments |= identifier.Name == "arguments";
-                return;
+                // local copies to prevent capturing closure created on top of method
+                var function = functionObject;
+                var arguments = argumentsList;
+
+                var promiseCapability = PromiseConstructor.NewPromiseCapability(context.Engine, context.Engine.Realm.Intrinsics.Promise);
+                // Each async function invocation needs its own JintStatementList to track its own position
+                var bodyStatementList = new JintStatementList(Function);
+                AsyncFunctionStart(context, promiseCapability, bodyStatementList, context =>
+                {
+                    context.Engine.FunctionDeclarationInstantiation(function, arguments);
+                    return bodyStatementList.Execute(context);
+                });
+                result = new Completion(CompletionType.Return, promiseCapability.PromiseInstance, Function.Body);
             }
-
-            while (true)
+            else
             {
-                if (parameter is RestElement restElement)
-                {
-                    _hasRestParameter = true;
-                    _hasParameterExpressions = true;
-                    parameter = restElement.Argument;
-                    continue;
-                }
-
-                if (parameter is ArrayPattern arrayPattern)
-                {
-                    _hasParameterExpressions = true;
-                    ref readonly var arrayPatternElements = ref arrayPattern.Elements;
-                    for (var i = 0; i < arrayPatternElements.Count; i++)
-                    {
-                        var expression = arrayPatternElements[i];
-                        GetBoundNames(
-                            expression,
-                            target,
-                            checkDuplicates,
-                            ref _hasRestParameter,
-                            ref _hasParameterExpressions,
-                            ref _hasDuplicates,
-                            ref hasArguments);
-                    }
-                }
-                else if (parameter is ObjectPattern objectPattern)
-                {
-                    _hasParameterExpressions = true;
-                    ref readonly var objectPatternProperties = ref objectPattern.Properties;
-                    for (var i = 0; i < objectPatternProperties.Count; i++)
-                    {
-                        var property = objectPatternProperties[i];
-                        if (property is Property p)
-                        {
-                            GetBoundNames(
-                                p.Value,
-                                target,
-                                checkDuplicates,
-                                ref _hasRestParameter,
-                                ref _hasParameterExpressions,
-                                ref _hasDuplicates,
-                                ref hasArguments);
-                        }
-                        else
-                        {
-                            _hasRestParameter = true;
-                            _hasParameterExpressions = true;
-                            parameter = ((RestElement) property).Argument;
-                            continue;
-                        }
-                    }
-                }
-                else if (parameter is AssignmentPattern assignmentPattern)
-                {
-                    _hasParameterExpressions = true;
-                    parameter = assignmentPattern.Left;
-                    continue;
-                }
-
-                break;
+                // https://tc39.es/ecma262/#sec-runtime-semantics-evaluatefunctionbody
+                argumentsInstance = context.Engine.FunctionDeclarationInstantiation(functionObject, argumentsList);
+                _bodyStatementList ??= new JintStatementList(Function);
+                result = _bodyStatementList.Execute(context);
             }
         }
 
-        private static void ProcessParameters(
-            IFunction function,
-            State state,
-            out bool hasArguments)
-        {
-            hasArguments = false;
-            state.IsSimpleParameterList = true;
+        argumentsInstance?.FunctionWasCalled();
+        return result;
+    }
 
-            ref readonly var functionDeclarationParams = ref function.Params;
-            var count = functionDeclarationParams.Count;
-            var parameterNames = new List<Key>(count);
-            for (var i = 0; i < count; i++)
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-async-functions-abstract-operations-async-function-start
+    /// </summary>
+    private static void AsyncFunctionStart(
+        EvaluationContext context,
+        PromiseCapability promiseCapability,
+        JintStatementList? body,
+        Func<EvaluationContext, Completion> asyncFunctionBody)
+    {
+        var engine = context.Engine;
+        var runningContext = engine.ExecutionContext;
+
+        // Step 1-2: Create async function state tracking instance
+        // This is an implementation detail not explicitly in spec, but needed for suspension/resumption
+        var asyncInstance = new AsyncFunctionInstance
+        {
+            _state = AsyncFunctionState.Executing,
+            _capability = promiseCapability,
+            _body = body,
+            _bodyFunction = asyncFunctionBody
+        };
+
+        // Step 3: "Let asyncContext be a copy of runningContext"
+        // Since ExecutionContext is a readonly struct, UpdateAsyncFunction creates a new copy
+        // with the AsyncFunction field set, achieving the spec's "copy" semantics.
+        var asyncContext = runningContext.UpdateAsyncFunction(asyncInstance);
+
+        // Store the context for resumption when awaited promises settle
+        asyncInstance._savedContext = asyncContext;
+
+        // Step 5: "Push asyncContext onto the execution context stack"
+        // We leave the old context and push the new one (equivalent to spec's push operation)
+        engine.LeaveExecutionContext();
+        engine.EnterExecutionContext(asyncContext);
+
+        // Step 6: "Resume the suspended evaluation of asyncContext"
+        // Perform AsyncBlockStart to begin executing the async function body
+        AsyncBlockStart(context, asyncInstance, asyncFunctionBody);
+    }
+
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-asyncblockstart
+    /// </summary>
+    private static void AsyncBlockStart(
+        EvaluationContext context,
+        AsyncFunctionInstance asyncInstance,
+        Func<EvaluationContext, Completion> asyncBody)
+    {
+        var engine = context.Engine;
+
+        Completion result;
+        try
+        {
+            result = asyncBody(context);
+        }
+        catch (JavaScriptException e)
+        {
+            // Per spec: DisposeResources before rejecting
+            var env = engine.ExecutionContext.LexicalEnvironment;
+            var disposeResult = env.DisposeResources(new Completion(CompletionType.Throw, e.Error, null!));
+            asyncInstance._state = AsyncFunctionState.Completed;
+            asyncInstance._capability.Reject.Call(JsValue.Undefined, disposeResult.Value);
+            return;
+        }
+
+        // Check if we suspended at an await
+        if (asyncInstance._state == AsyncFunctionState.SuspendedAwait)
+        {
+            // Suspended - promise reaction will resume execution later
+            // Do NOT dispose resources yet - body hasn't completed
+            return;
+        }
+
+        // Per spec AsyncBlockStart step 3.f: DisposeResources after body completes
+        var lexEnv = engine.ExecutionContext.LexicalEnvironment;
+        result = lexEnv.DisposeResources(result);
+
+        // Completed - resolve or reject the async function's return promise
+        asyncInstance._state = AsyncFunctionState.Completed;
+
+        if (result.Type == CompletionType.Throw)
+        {
+            asyncInstance._capability.Reject.Call(JsValue.Undefined, result.Value);
+        }
+        else if (result.Type == CompletionType.Normal)
+        {
+            asyncInstance._capability.Resolve.Call(JsValue.Undefined, JsValue.Undefined);
+        }
+        else if (result.Type == CompletionType.Return)
+        {
+            asyncInstance._capability.Resolve.Call(JsValue.Undefined, result.Value);
+        }
+        else
+        {
+            asyncInstance._capability.Reject.Call(JsValue.Undefined, result.Value);
+        }
+    }
+
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-runtime-semantics-evaluategeneratorbody
+    /// </summary>
+    private Completion EvaluateGeneratorBody(
+        EvaluationContext context,
+        Function functionObject,
+        JsCallArguments argumentsList)
+    {
+        var engine = context.Engine;
+        engine.FunctionDeclarationInstantiation(functionObject, argumentsList);
+        var G = engine.Realm.Intrinsics.Function.OrdinaryCreateFromConstructor(
+            functionObject,
+            static intrinsics => intrinsics.GeneratorFunction.PrototypeObject.PrototypeObject,
+            static (Engine engine, Realm _, object? _) => new GeneratorInstance(engine));
+
+        _bodyStatementList ??= new JintStatementList(Function);
+        _bodyStatementList.Reset();
+        G.GeneratorStart(_bodyStatementList);
+
+        return new Completion(CompletionType.Return, G, Function.Body);
+    }
+
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-runtime-semantics-evaluateasyncgeneratorbody
+    /// </summary>
+    private Completion EvaluateAsyncGeneratorBody(
+        EvaluationContext context,
+        Function functionObject,
+        JsCallArguments argumentsList)
+    {
+        var engine = context.Engine;
+        engine.FunctionDeclarationInstantiation(functionObject, argumentsList);
+        var G = engine.Realm.Intrinsics.Function.OrdinaryCreateFromConstructor(
+            functionObject,
+            static intrinsics => intrinsics.AsyncGeneratorFunction.PrototypeObject.PrototypeObject,
+            static (Engine engine, Realm _, object? _) => new AsyncGeneratorInstance(engine));
+
+        _bodyStatementList ??= new JintStatementList(Function);
+        _bodyStatementList.Reset();
+        G.AsyncGeneratorStart(_bodyStatementList);
+
+        return new Completion(CompletionType.Return, G, Function.Body);
+    }
+
+    internal State Initialize()
+    {
+        var node = (Node) Function;
+        var state = (State) (node.UserData ??= BuildState(Function));
+        return state;
+    }
+
+    internal sealed class State
+    {
+        public bool HasRestParameter;
+        public int Length;
+        public Key[] ParameterNames = null!;
+        public bool HasDuplicates;
+        public bool IsSimpleParameterList;
+        public bool HasParameterExpressions;
+        public bool ArgumentsObjectNeeded;
+        public bool RequiresInputArgumentsOwnership;
+        public List<Key>? VarNames;
+        public LinkedList<FunctionDeclaration>? FunctionsToInitialize;
+        public readonly HashSet<Key> FunctionNames = new();
+        public DeclarationCache? LexicalDeclarations;
+        public HashSet<Key>? ParameterBindings;
+        public List<VariableValuePair>? VarsToInitialize;
+        public bool NeedsEvalContext;
+        /// <summary>
+        /// B.3.3.1: Names of block-level function declarations that need runtime var-scope copy.
+        /// </summary>
+        public HashSet<Key>? AnnexBFunctionNames;
+
+        /// <summary>
+        /// B.3.3.1: The specific function declaration AST nodes that are AnnexB-eligible.
+        /// Used to distinguish same-named declarations at different block levels.
+        /// </summary>
+        public HashSet<FunctionDeclaration>? AnnexBFunctionDeclarations;
+
+        // Fixed-slot optimization fields
+        public bool UseFixedSlots;
+        public Key[]? SlotNames;
+        public int ParameterSlotCount;
+        public int VarSlotCount;
+        public bool CanUseFastFDI;
+        public bool EnvironmentMayEscape;
+        public Binding[]? _cachedSlots;
+
+        internal readonly record struct VariableValuePair(Key Name, JsValue? InitialValue);
+    }
+
+    internal static State BuildState(IFunction function)
+    {
+        var state = new State();
+
+        ProcessParameters(function, state, out var hasArguments);
+
+        var strict = function.IsStrict();
+        var hoistingScope = HoistingScope.GetFunctionLevelDeclarations(strict, function);
+        var functionDeclarations = hoistingScope._functionDeclarations;
+        var lexicalNames = hoistingScope._lexicalNames;
+        state.VarNames = hoistingScope._varNames;
+
+        LinkedList<FunctionDeclaration>? functionsToInitialize = null;
+
+        if (functionDeclarations != null)
+        {
+            functionsToInitialize = new LinkedList<FunctionDeclaration>();
+            for (var i = functionDeclarations.Count - 1; i >= 0; i--)
             {
-                var parameter = functionDeclarationParams[i];
-                if (parameter is Identifier id)
+                var d = functionDeclarations[i];
+                var fn = d.Id!.Name;
+                if (state.FunctionNames.Add(fn))
                 {
-                    state.HasDuplicates |= parameterNames.Contains(id.Name);
-                    hasArguments = id.Name == "arguments";
-                    parameterNames.Add(id.Name);
-                    if (state.IsSimpleParameterList)
+                    functionsToInitialize.AddFirst(d);
+                }
+            }
+        }
+
+        state.FunctionsToInitialize = functionsToInitialize;
+
+        state.ArgumentsObjectNeeded = true;
+        var thisMode = strict ? FunctionThisMode.Strict : FunctionThisMode.Global;
+        if (function.Type == NodeType.ArrowFunctionExpression)
+        {
+            thisMode = FunctionThisMode.Lexical;
+        }
+
+        if (thisMode == FunctionThisMode.Lexical || hasArguments)
+        {
+            state.ArgumentsObjectNeeded = false;
+        }
+        else if (!state.HasParameterExpressions)
+        {
+            if (state.FunctionNames.Contains(KnownKeys.Arguments) || lexicalNames?.Contains(KnownKeys.Arguments) == true)
+            {
+                state.ArgumentsObjectNeeded = false;
+            }
+        }
+
+        if (state.ArgumentsObjectNeeded)
+        {
+            // just one extra check...
+            state.ArgumentsObjectNeeded = ArgumentsUsageAstVisitor.HasArgumentsReference(function);
+        }
+
+        state.NeedsEvalContext = !strict;
+        if (state.NeedsEvalContext)
+        {
+            // yet another extra check
+            state.NeedsEvalContext = EvalContextAstVisitor.HasEvalOrDebugger(function);
+        }
+
+        var parameterBindings = new HashSet<Key>(state.ParameterNames);
+        if (state.ArgumentsObjectNeeded)
+        {
+            parameterBindings.Add(KnownKeys.Arguments);
+        }
+
+        if (function.Type == NodeType.ArrowFunctionExpression)
+        {
+            state.RequiresInputArgumentsOwnership = state.ArgumentsObjectNeeded ||
+                (function.Async && ArgumentsUsageAstVisitor.HasArgumentsReference(function));
+        }
+        else
+        {
+            state.RequiresInputArgumentsOwnership = state.ArgumentsObjectNeeded &&
+                (function.Async || function.Generator);
+        }
+
+        state.ParameterBindings = parameterBindings;
+
+        var varsToInitialize = new List<State.VariableValuePair>();
+        if (!state.HasParameterExpressions)
+        {
+            var instantiatedVarNames = state.VarNames != null
+                ? new HashSet<Key>(state.ParameterBindings)
+                : new HashSet<Key>();
+
+            // Add function names first (they take precedence over var declarations with same name)
+            foreach (var fn in state.FunctionNames)
+            {
+                if (instantiatedVarNames.Add(fn))
+                {
+                    varsToInitialize.Add(new State.VariableValuePair(Name: fn, InitialValue: null));
+                }
+            }
+
+            for (var i = 0; i < state.VarNames?.Count; i++)
+            {
+                var n = state.VarNames[i];
+                if (instantiatedVarNames.Add(n))
+                {
+                    varsToInitialize.Add(new State.VariableValuePair(Name: n, InitialValue: null));
+                }
+            }
+        }
+        else
+        {
+            var instantiatedVarNames = state.VarNames != null
+                ? new HashSet<Key>(state.ParameterBindings)
+                : null;
+
+            // Add function names first (they take precedence over var declarations with same name)
+            foreach (var fn in state.FunctionNames)
+            {
+                if (instantiatedVarNames?.Add(fn) != false)
+                {
+                    instantiatedVarNames ??= new HashSet<Key>();
+                    instantiatedVarNames.Add(fn);
+                    JsValue? initialValue = null;
+                    if (!state.ParameterBindings.Contains(fn))
                     {
-                        state.Length++;
+                        initialValue = JsValue.Undefined;
+                    }
+                    varsToInitialize.Add(new State.VariableValuePair(Name: fn, InitialValue: initialValue));
+                }
+            }
+
+            for (var i = 0; i < state.VarNames?.Count; i++)
+            {
+                var n = state.VarNames[i];
+                if (instantiatedVarNames!.Add(n))
+                {
+                    JsValue? initialValue = null;
+                    if (!state.ParameterBindings.Contains(n) || state.FunctionNames.Contains(n))
+                    {
+                        initialValue = JsValue.Undefined;
+                    }
+
+                    varsToInitialize.Add(new State.VariableValuePair(Name: n, InitialValue: initialValue));
+                }
+            }
+        }
+
+        state.VarsToInitialize = varsToInitialize;
+
+        // B.3.3.1: AnnexB block-level function declarations need var bindings
+        var annexBFunctions = hoistingScope._annexBFunctionDeclarations;
+        if (annexBFunctions != null)
+        {
+            var instantiatedVarNames = new HashSet<Key>(state.ParameterNames);
+            foreach (var pair in varsToInitialize)
+            {
+                instantiatedVarNames.Add(pair.Name);
+            }
+
+            for (var i = 0; i < annexBFunctions.Count; i++)
+            {
+                var f = annexBFunctions[i];
+                Key fn = f.Id!.Name;
+
+                // Skip if name conflicts with parameter or lexical declaration
+                if (state.ParameterBindings!.Contains(fn))
+                {
+                    continue;
+                }
+
+                if (lexicalNames?.Contains(fn) == true)
+                {
+                    continue;
+                }
+
+                state.AnnexBFunctionNames ??= new HashSet<Key>();
+                state.AnnexBFunctionNames.Add(fn);
+
+                state.AnnexBFunctionDeclarations ??= [];
+                state.AnnexBFunctionDeclarations.Add(f);
+
+                if (instantiatedVarNames.Add(fn))
+                {
+                    varsToInitialize.Add(new State.VariableValuePair(Name: fn, InitialValue: JsValue.Undefined));
+                }
+            }
+        }
+
+        if (hoistingScope._lexicalDeclarations != null)
+        {
+            state.LexicalDeclarations = DeclarationCacheBuilder.Build(hoistingScope._lexicalDeclarations);
+        }
+
+        // Fixed-slot qualification: use array-based binding storage for simple functions
+        if (state.IsSimpleParameterList
+            && !state.HasDuplicates
+            && !state.HasParameterExpressions
+            && !state.NeedsEvalContext
+            && !state.ArgumentsObjectNeeded
+            && state.FunctionsToInitialize is null)
+        {
+            // Count lexical declaration bindings (let/const only, no function/class declarations)
+            var lexicalBindingCount = 0;
+            var lexDecls = state.LexicalDeclarations;
+            if (lexDecls is { AllLexicalScoped: true } ld)
+            {
+                foreach (var decl in ld.Declarations)
+                {
+                    lexicalBindingCount += decl.BoundNames.Length;
+                }
+            }
+            else if (lexDecls is not null)
+            {
+                // Has non-lexical declarations (function/class) — can't use fixed slots
+                lexicalBindingCount = -1;
+            }
+
+            var totalSlots = state.ParameterNames.Length + varsToInitialize.Count + lexicalBindingCount;
+            if (lexicalBindingCount >= 0 && totalSlots is > 0 and <= 16)
+            {
+                var slotNames = new Key[totalSlots];
+                state.ParameterNames.CopyTo(slotNames, 0);
+                var varOffset = state.ParameterNames.Length;
+                for (var i = 0; i < varsToInitialize.Count; i++)
+                {
+                    slotNames[varOffset + i] = varsToInitialize[i].Name;
+                }
+
+                // Add lexical declaration names (let/const)
+                if (lexicalBindingCount > 0)
+                {
+                    var lexOffset = varOffset + varsToInitialize.Count;
+                    foreach (var decl in lexDecls!.Value.Declarations)
+                    {
+                        foreach (var bn in decl.BoundNames)
+                        {
+                            slotNames[lexOffset++] = bn;
+                        }
                     }
                 }
-                else if (parameter.Type != Nodes.Literal)
+
+                state.SlotNames = slotNames;
+                state.ParameterSlotCount = state.ParameterNames.Length;
+                state.VarSlotCount = varsToInitialize.Count;
+                state.UseFixedSlots = true;
+                state.CanUseFastFDI = lexicalBindingCount == 0;
+
+                if (function.Generator || function.Async)
                 {
-                    state.IsSimpleParameterList = false;
+                    state.EnvironmentMayEscape = true;
+                }
+                else
+                {
+                    state.EnvironmentMayEscape = EnvironmentEscapeAstVisitor.MayEscapeWithReferences(function, slotNames);
+                }
+            }
+        }
+
+        return state;
+    }
+
+    private static void GetBoundNames(
+        Node parameter,
+        List<Key> target,
+        ref bool hasRestParameter,
+        ref bool hasParameterExpressions,
+        ref bool hasDuplicates,
+        ref bool hasArguments)
+    {
+Start:
+        if (parameter.Type == NodeType.Identifier)
+        {
+            var key = (Key) ((Identifier) parameter).Name;
+            hasDuplicates |= target.Contains(key);
+            target.Add(key);
+            hasArguments |= key == KnownKeys.Arguments;
+            return;
+        }
+
+        while (true)
+        {
+            if (parameter.Type == NodeType.RestElement)
+            {
+                hasRestParameter = true;
+                parameter = ((RestElement) parameter).Argument;
+                continue;
+            }
+
+            if (parameter.Type == NodeType.ArrayPattern)
+            {
+                foreach (var element in ((ArrayPattern) parameter).Elements.AsSpan())
+                {
+                    if (element is null)
+                    {
+                        continue;
+                    }
+
+                    if (element.Type == NodeType.RestElement)
+                    {
+                        hasRestParameter = true;
+                        parameter = ((RestElement) element).Argument;
+                        goto Start;
+                    }
+
                     GetBoundNames(
-                        parameter,
-                        parameterNames,
-                        checkDuplicates: true,
-                        ref state.HasRestParameter,
-                        ref state.HasParameterExpressions,
-                        ref state.HasDuplicates,
+                        element,
+                        target,
+                        ref hasRestParameter,
+                        ref hasParameterExpressions,
+                        ref hasDuplicates,
                         ref hasArguments);
                 }
             }
+            else if (parameter.Type == NodeType.ObjectPattern)
+            {
+                foreach (var property in ((ObjectPattern) parameter).Properties.AsSpan())
+                {
+                    if (property.Type == NodeType.RestElement)
+                    {
+                        hasRestParameter = true;
+                        parameter = ((RestElement) property).Argument;
+                        goto Start;
+                    }
 
-            state.ParameterNames = parameterNames.ToArray();
+                    GetBoundNames(
+                        ((AssignmentProperty) property).Value,
+                        target,
+                        ref hasRestParameter,
+                        ref hasParameterExpressions,
+                        ref hasDuplicates,
+                        ref hasArguments);
+                }
+            }
+            else if (parameter.Type == NodeType.AssignmentPattern)
+            {
+                var assignmentPattern = (AssignmentPattern) parameter;
+                hasParameterExpressions |= ExpressionAstVisitor.HasExpression(assignmentPattern.ChildNodes);
+                parameter = assignmentPattern.Left;
+
+                // need to goto Start so Identifier case is handled
+                goto Start;
+            }
+
+            break;
+        }
+    }
+
+    private static void ProcessParameters(
+        IFunction function,
+        State state,
+        out bool hasArguments)
+    {
+        hasArguments = false;
+        state.IsSimpleParameterList = true;
+
+        var countParameters = true;
+        ref readonly var functionDeclarationParams = ref function.Params;
+        var count = functionDeclarationParams.Count;
+        var parameterNames = new List<Key>(count);
+        foreach (var parameter in function.Params.AsSpan())
+        {
+            var type = parameter.Type;
+
+            if (type == NodeType.Identifier)
+            {
+                var key = (Key) ((Identifier) parameter).Name;
+                state.HasDuplicates |= parameterNames.Contains(key);
+                hasArguments |= key == KnownKeys.Arguments;
+                parameterNames.Add(key);
+            }
+            else if (type != NodeType.Literal)
+            {
+                countParameters &= type != NodeType.AssignmentPattern;
+                state.IsSimpleParameterList = false;
+                GetBoundNames(
+                    parameter,
+                    parameterNames,
+                    ref state.HasRestParameter,
+                    ref state.HasParameterExpressions,
+                    ref state.HasDuplicates,
+                    ref hasArguments);
+            }
+
+            if (countParameters && type is NodeType.Identifier or NodeType.ObjectPattern or NodeType.ArrayPattern)
+            {
+                state.Length++;
+            }
+        }
+
+        state.ParameterNames = parameterNames.ToArray();
+    }
+
+    private static class ArgumentsUsageAstVisitor
+    {
+        public static bool HasArgumentsReference(IFunction function)
+        {
+            if (HasArgumentsReference(function.Body))
+            {
+                return true;
+            }
+
+            foreach (var parameter in function.Params.AsSpan())
+            {
+                if (HasArgumentsReference(parameter))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool HasArgumentsReference(Node node)
+        {
+            foreach (var childNode in node.ChildNodes)
+            {
+                var childType = childNode.Type;
+                if (childType == NodeType.Identifier)
+                {
+                    if (string.Equals(((Identifier) childNode).Name, "arguments", StringComparison.Ordinal))
+                    {
+                        return true;
+                    }
+                }
+                else if (childType != NodeType.FunctionDeclaration && !childNode.ChildNodes.IsEmpty())
+                {
+                    if (HasArgumentsReference(childNode))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+    }
+
+    private static class EvalContextAstVisitor
+    {
+        public static bool HasEvalOrDebugger(IFunction function)
+        {
+            if (HasEvalOrDebugger(function.Body))
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool HasEvalOrDebugger(Node node)
+        {
+            foreach (var childNode in node.ChildNodes)
+            {
+                var childType = childNode.Type;
+                if (childType == NodeType.DebuggerStatement)
+                {
+                    return true;
+                }
+
+                if (childType == NodeType.CallExpression)
+                {
+                    if (((CallExpression) childNode).Callee is Identifier identifier && identifier.Name.Equals("eval", StringComparison.Ordinal))
+                    {
+                        return true;
+                    }
+                }
+                else if (childType != NodeType.FunctionDeclaration && !childNode.ChildNodes.IsEmpty())
+                {
+                    if (HasEvalOrDebugger(childNode))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+    }
+
+    private static class ExpressionAstVisitor
+    {
+        internal static bool HasExpression(ChildNodes nodes)
+        {
+            foreach (var childNode in nodes)
+            {
+                switch (childNode.Type)
+                {
+                    case NodeType.ArrowFunctionExpression:
+                    case NodeType.FunctionExpression:
+                    case NodeType.CallExpression:
+                    case NodeType.AssignmentExpression:
+                        return true;
+                    case NodeType.Identifier:
+                    case NodeType.Literal:
+                        continue;
+                    default:
+                        if (!childNode.ChildNodes.IsEmpty())
+                        {
+                            if (HasExpression(childNode.ChildNodes))
+                            {
+                                return true;
+                            }
+                        }
+
+                        break;
+                }
+            }
+
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Checks if a function's per-call environment may escape (be captured by closures).
+    /// If true, the environment cannot be pooled/cached for reuse.
+    /// </summary>
+    internal static class EnvironmentEscapeAstVisitor
+    {
+        internal static bool MayEscape(IFunction function)
+        {
+            var body = function.Body;
+            if (IsCapturing(body))
+            {
+                return true;
+            }
+            return MayEscape(body);
+        }
+
+        /// <summary>
+        /// Smarter escape analysis: checks if any closures in the function body actually reference
+        /// any of the specified slot variable names. If closures exist but don't reference any slot
+        /// variables, the environment can still be safely cached.
+        /// </summary>
+        internal static bool MayEscapeWithReferences(IFunction function, Key[] slotNames)
+        {
+            var body = function.Body;
+
+            // For concise arrows like x => y => x * y, the body itself is a closure
+            if (IsCapturing(body))
+            {
+                return ClosureReferencesAny(body, slotNames);
+            }
+
+            return ScanForCapturingReferences(body, slotNames);
+        }
+
+        internal static bool IsCapturing(Node node)
+        {
+            if (node.Type is NodeType.FunctionDeclaration
+                or NodeType.FunctionExpression
+                or NodeType.ArrowFunctionExpression
+                or NodeType.ClassDeclaration
+                or NodeType.ClassExpression
+                or NodeType.WithStatement)
+            {
+                return true;
+            }
+
+            // Direct eval() can dynamically create closures that capture the environment
+            if (node.Type == NodeType.CallExpression
+                && ((CallExpression) node).Callee is Identifier { Name: "eval" })
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        internal static bool MayEscape(Node node)
+        {
+            foreach (var childNode in node.ChildNodes)
+            {
+                // Captures the environment — function/class/eval/with create closures over bindings
+                if (IsCapturing(childNode))
+                {
+                    return true;
+                }
+
+                // Safe to recurse: IsCapturing already caught function/class/eval/with nodes,
+                // so we only recurse into non-capturing nodes (blocks, if/else, loops, etc.)
+                if (!childNode.ChildNodes.IsEmpty() && MayEscape(childNode))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Scans the node tree for closures that reference any of the specified slot names.
+        /// When a closure is found, its body is searched for identifier references matching slot names.
+        /// eval() and with statements always cause escape (dynamic references can't be analyzed).
+        /// </summary>
+        private static bool ScanForCapturingReferences(Node node, Key[] slotNames)
+        {
+            foreach (var childNode in node.ChildNodes)
+            {
+                // eval() and with statement always capture — can't analyze dynamic references
+                if (childNode.Type == NodeType.WithStatement)
+                {
+                    return true;
+                }
+
+                if (childNode.Type == NodeType.CallExpression
+                    && ((CallExpression) childNode).Callee is Identifier { Name: "eval" })
+                {
+                    return true;
+                }
+
+                // Found a closure — check if it references any slot variables
+                if (childNode.Type is NodeType.FunctionDeclaration
+                    or NodeType.FunctionExpression
+                    or NodeType.ArrowFunctionExpression
+                    or NodeType.ClassDeclaration
+                    or NodeType.ClassExpression)
+                {
+                    if (ClosureReferencesAny(childNode, slotNames))
+                    {
+                        return true;
+                    }
+                    // Closure doesn't reference any slot vars — skip it
+                    continue;
+                }
+
+                // Recurse into non-capturing nodes (blocks, if/else, loops, etc.)
+                if (!childNode.ChildNodes.IsEmpty() && ScanForCapturingReferences(childNode, slotNames))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Checks if a closure node (function/arrow/class) references any of the specified names.
+        /// Walks the entire closure tree looking for matching identifiers, including nested functions
+        /// (since they can access outer variables through the scope chain).
+        /// </summary>
+        private static bool ClosureReferencesAny(Node closureNode, Key[] slotNames)
+        {
+            foreach (var childNode in closureNode.ChildNodes)
+            {
+                if (childNode.Type == NodeType.Identifier)
+                {
+                    var name = ((Identifier) childNode).Name;
+                    for (var i = 0; i < slotNames.Length; i++)
+                    {
+                        if (string.Equals(slotNames[i].Name, name, StringComparison.Ordinal))
+                        {
+                            return true;
+                        }
+                    }
+                    continue;
+                }
+
+                // eval() inside the closure can access any outer variable
+                if (childNode.Type == NodeType.CallExpression
+                    && ((CallExpression) childNode).Callee is Identifier { Name: "eval" })
+                {
+                    return true;
+                }
+
+                if (!childNode.ChildNodes.IsEmpty() && ClosureReferencesAny(childNode, slotNames))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
     }
 }
