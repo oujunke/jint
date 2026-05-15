@@ -6,7 +6,7 @@ using Jint.Runtime;
 
 namespace Jint.Native.Iterator;
 
-internal abstract class IteratorInstance : ObjectInstance
+public abstract class IteratorInstance : ObjectInstance
 {
     protected IteratorInstance(Engine engine) : base(engine)
     {

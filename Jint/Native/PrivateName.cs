@@ -6,7 +6,7 @@ namespace Jint.Native;
 /// Private names are a bit like symbols, they follow reference equality so that each one is globally to object,
 /// only exception to the rule is get/set pair which should share same private name.
 /// </summary>
-internal sealed class PrivateName : JsValue, IEquatable<PrivateName>
+public sealed class PrivateName : JsValue, IEquatable<PrivateName>
 {
     private readonly PrivateIdentifier? _identifier;
 

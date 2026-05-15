@@ -5,7 +5,7 @@ namespace Jint.Runtime.Environments;
 /// <summary>
 /// https://tc39.es/ecma262/#sec-privateenvironment-records
 /// </summary>
-internal sealed class PrivateEnvironment
+public sealed class PrivateEnvironment
 {
     public PrivateEnvironment(PrivateEnvironment? outerPrivEnv)
     {

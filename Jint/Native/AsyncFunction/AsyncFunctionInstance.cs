@@ -9,7 +9,7 @@ namespace Jint.Native.AsyncFunction;
 /// Tracks the execution state of an async function, enabling suspension at await points
 /// and resumption when the awaited promise settles.
 /// </summary>
-internal sealed class AsyncFunctionInstance : ISuspendable
+public sealed class AsyncFunctionInstance : ISuspendable
 {
     internal AsyncFunctionState _state;
 

@@ -9,7 +9,7 @@ namespace Jint.Native.Generator;
 /// <summary>
 /// https://tc39.es/ecma262/#sec-properties-of-generator-instances
 /// </summary>
-internal sealed class GeneratorInstance : ObjectInstance, ISuspendable
+public sealed class GeneratorInstance : ObjectInstance, ISuspendable
 {
     internal GeneratorState _generatorState;
     private ExecutionContext _generatorContext;

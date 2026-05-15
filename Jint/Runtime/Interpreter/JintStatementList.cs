@@ -7,7 +7,7 @@ using Jint.Runtime.Interpreter.Statements;
 
 namespace Jint.Runtime.Interpreter;
 
-internal sealed class JintStatementList
+public sealed class JintStatementList
 {
     private readonly record struct Pair(JintStatement Statement, JsValue? Value);
 

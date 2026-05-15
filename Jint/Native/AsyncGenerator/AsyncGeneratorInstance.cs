@@ -12,7 +12,7 @@ namespace Jint.Native.AsyncGenerator;
 /// <summary>
 /// https://tc39.es/ecma262/#sec-asyncgenerator-objects
 /// </summary>
-internal sealed class AsyncGeneratorInstance : ObjectInstance, ISuspendable
+public sealed class AsyncGeneratorInstance : ObjectInstance, ISuspendable
 {
     internal AsyncGeneratorState _asyncGeneratorState;
     private ExecutionContext _asyncGeneratorContext;

@@ -7,7 +7,7 @@ using Environment = Jint.Runtime.Environments.Environment;
 
 namespace Jint.Runtime;
 
-internal sealed class ExecutionContextStack
+public sealed class ExecutionContextStack
 {
     private readonly RefStack<ExecutionContext> _stack;
 

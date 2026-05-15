@@ -5,7 +5,7 @@ using Jint.Native.Generator;
 
 namespace Jint.Runtime.Environments;
 
-internal readonly struct ExecutionContext
+public readonly struct ExecutionContext
 {
     internal ExecutionContext(
         IScriptOrModule? scriptOrModule,

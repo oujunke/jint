@@ -6,7 +6,7 @@ namespace Jint.Runtime;
 /// Interface for entities that can suspend execution (generators, async functions).
 /// Aligns with TC39 execution context suspension semantics.
 /// </summary>
-internal interface ISuspendable
+public interface ISuspendable
 {
     /// <summary>
     /// Whether this suspendable is currently in a suspended state.

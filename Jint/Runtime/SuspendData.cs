@@ -10,7 +10,7 @@ namespace Jint.Runtime;
 /// Used to track iterator state when a generator yields inside constructs like for-of loops
 /// or destructuring patterns.
 /// </summary>
-internal abstract class SuspendData
+public abstract class SuspendData
 {
     /// <summary>
     /// The iterator instance that was in progress when the generator suspended.
@@ -289,7 +289,7 @@ internal sealed class SequenceSuspendData : SuspendData
     public int ExpressionIndex { get; set; }
 }
 
-internal sealed class SuspendDataDictionary
+public sealed class SuspendDataDictionary
 {
     /// <summary>
     /// Unified dictionary for all suspend data (for-of loops, destructuring patterns, etc.).

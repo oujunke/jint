@@ -1,6 +1,6 @@
 namespace Jint.Native.Function;
 
-internal enum FunctionThisMode
+public enum FunctionThisMode
 {
     Lexical,
     Strict,
