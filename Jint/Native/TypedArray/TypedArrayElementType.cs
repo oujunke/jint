@@ -2,7 +2,7 @@ using Jint.Runtime;
 
 namespace Jint.Native.TypedArray;
 
-internal enum TypedArrayElementType : byte
+public enum TypedArrayElementType : byte
 {
     // we have signed first to make comparison vaster to check if signed or unsigned type
     Int8,

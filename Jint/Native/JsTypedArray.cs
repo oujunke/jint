@@ -15,6 +15,8 @@ public sealed class JsTypedArray : ObjectInstance
 
     internal readonly TypedArrayContentType _contentType;
     internal readonly TypedArrayElementType _arrayElementType;
+    public TypedArrayElementType ArrayElementType { get => _arrayElementType; }
+
     internal JsArrayBuffer _viewedArrayBuffer;
     internal uint _byteLength;
     internal int _byteOffset;

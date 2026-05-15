@@ -6,7 +6,7 @@ namespace Jint.Runtime.Interpreter;
 /// <summary>
 /// Per Engine.Evaluate() call context.
 /// </summary>
-internal sealed class EvaluationContext
+public sealed class EvaluationContext
 {
     private readonly bool _shouldRunBeforeExecuteStatementChecks;
 

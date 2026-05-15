@@ -349,8 +349,12 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
         {
             return _properties?.TryGetValue(TypeConverter.ToString(key), out descriptor) == true;
         }
-
-        return _symbols?.TryGetValue((JsSymbol) key, out descriptor) == true;
+        var res = _symbols?.TryGetValue((JsSymbol) key, out descriptor);
+        if (res == true)
+        {
+            descriptor = (PropertyDescriptor?) (InterceptHelper.Intercept?.Invoke(InterceptHelper.InterceptType.GetProperty, new object?[] { this, property, descriptor }) ?? descriptor);
+        }
+        return res == true;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -459,7 +463,7 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
         {
             _symbols?.TryGetValue((JsSymbol) key, out descriptor);
         }
-
+        descriptor = (PropertyDescriptor?) (InterceptHelper.Intercept?.Invoke(InterceptHelper.InterceptType.GetOwnProperty, new object?[] { this, property, descriptor }) ?? descriptor);
         return descriptor ?? PropertyDescriptor.Undefined;
     }
 

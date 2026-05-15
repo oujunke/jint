@@ -51,6 +51,10 @@ internal sealed class JintFunctionDefinition
         {
             // https://tc39.es/ecma262/#sec-runtime-semantics-evaluateconcisebody
             _bodyExpression ??= JintExpression.Build((Expression) Function.Body);
+            if (InterceptHelper.Intercept?.Invoke(InterceptHelper.InterceptType.JintFunctionDefinitionBefore, new object?[] { Name, Function, context, _bodyStatementList }) is Completion completion)
+            {
+                return completion;
+            }
             if (Function.Async)
             {
                 // local copies to prevent capturing closure created on top of method
@@ -100,6 +104,10 @@ internal sealed class JintFunctionDefinition
                 var promiseCapability = PromiseConstructor.NewPromiseCapability(context.Engine, context.Engine.Realm.Intrinsics.Promise);
                 // Each async function invocation needs its own JintStatementList to track its own position
                 var bodyStatementList = new JintStatementList(Function);
+                if (InterceptHelper.Intercept?.Invoke(InterceptHelper.InterceptType.JintFunctionDefinitionBefore, new object?[] { Name, Function, context, bodyStatementList }) is Completion completion)
+                {
+                    return completion;
+                }
                 AsyncFunctionStart(context, promiseCapability, bodyStatementList, context =>
                 {
                     context.Engine.FunctionDeclarationInstantiation(function, arguments);
@@ -112,6 +120,10 @@ internal sealed class JintFunctionDefinition
                 // https://tc39.es/ecma262/#sec-runtime-semantics-evaluatefunctionbody
                 argumentsInstance = context.Engine.FunctionDeclarationInstantiation(functionObject, argumentsList);
                 _bodyStatementList ??= new JintStatementList(Function);
+                if (InterceptHelper.Intercept?.Invoke(InterceptHelper.InterceptType.JintFunctionDefinitionBefore, new object?[] { Name, Function, context, _bodyStatementList }) is Completion completion)
+                {
+                    return completion;
+                }
                 result = _bodyStatementList.Execute(context);
             }
         }

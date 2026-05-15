@@ -36,14 +36,23 @@ internal abstract class JintExpression
     [MethodImpl(MethodImplOptions.AggressiveInlining | (MethodImplOptions) 512)]
     public object Evaluate(EvaluationContext context)
     {
+        object? result = InterceptHelper.Intercept?.Invoke(InterceptHelper.InterceptType.JintExpressionBefore, new object[] { this, context, _expression });
+        if (result != null)
+        {
+            return result;
+        }
         var oldSyntaxElement = context.LastSyntaxElement;
         context.PrepareFor(_expression);
 
-        var result = EvaluateInternal(context);
+        var result2 = EvaluateInternal(context);
 
         context.LastSyntaxElement = oldSyntaxElement;
-
-        return result;
+        result = InterceptHelper.Intercept?.Invoke(InterceptHelper.InterceptType.JintExpressionAfter, new object[] { this, context, _expression, result2 });
+        if (result != null)
+        {
+            return result;
+        }
+        return result2;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

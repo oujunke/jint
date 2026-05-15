@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 using Acornima;
 using Jint.Native;
@@ -28,13 +29,21 @@ internal abstract class JintStatement
     [MethodImpl(MethodImplOptions.AggressiveInlining | (MethodImplOptions) 512)]
     public Completion Execute(EvaluationContext context)
     {
+        if (InterceptHelper.Intercept?.Invoke(InterceptHelper.InterceptType.JintStatementBefore, new object[] { this, context, _statement }) is Completion completion)
+        {
+            return completion;
+        }
         if (_statement.Type != NodeType.BlockStatement)
         {
             context.PrepareFor(_statement);
             context.RunBeforeExecuteStatementChecks(_statement);
         }
-
-        return ExecuteInternal(context);
+        var result = ExecuteInternal(context);
+        if (InterceptHelper.Intercept?.Invoke(InterceptHelper.InterceptType.JintStatementAfter, new object[] { this, context, _statement, result }) is Completion completion1)
+        {
+            return completion1;
+        }
+        return result;
     }
 
     protected abstract Completion ExecuteInternal(EvaluationContext context);
