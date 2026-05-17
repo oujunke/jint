@@ -25,19 +25,19 @@ public partial class Engine
     /// <summary>
     /// Cached OnRegExp handler for <see cref="DefaultRegexTimeout"/> (interpreted .NET Regex).
     /// </summary>
-    internal static OnRegExpHandler DefaultConvertRegExpHandler
+    public static OnRegExpHandler DefaultConvertRegExpHandler
         => CreateRegExpHandler(compiled: false, DefaultRegexTimeout);
 
     /// <summary>
     /// Cached OnRegExp handler for <see cref="DefaultRegexTimeout"/> (compiled .NET Regex).
     /// </summary>
-    internal static OnRegExpHandler DefaultCompileRegExpHandler
+    public static OnRegExpHandler DefaultCompileRegExpHandler
         => CreateRegExpHandler(compiled: true, DefaultRegexTimeout);
 
     /// <summary>
     /// Creates an OnRegExp handler with a caller-specified timeout.
     /// </summary>
-    internal static OnRegExpHandler CreateRegExpHandler(bool compiled, TimeSpan timeout)
+    public static OnRegExpHandler CreateRegExpHandler(bool compiled, TimeSpan timeout)
         => new RegexConversionOptions(compiled, timeout).HandleOnRegExp;
 
     internal sealed class RegexConversionOptions(bool compiled, TimeSpan timeout)
@@ -60,7 +60,7 @@ public partial class Engine
     /// Cached OnNode callback that stores the source text being parsed in <see cref="Node.UserData"/> of function nodes
     /// to support <see cref="Function.ToString"><c>Function.prototype.toString()</c> implementation</see>.
     /// </summary>
-    internal static readonly OnNodeHandler DefaultNodeHandler = static (node, in ctx) =>
+    public static readonly OnNodeHandler DefaultNodeHandler = static (node, in ctx) =>
     {
         if (node.Type is NodeType.ArrowFunctionExpression or NodeType.FunctionDeclaration or NodeType.FunctionExpression)
         {
