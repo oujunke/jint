@@ -19,20 +19,20 @@ public sealed class JintFunctionDefinition
     private JintStatementList? _bodyStatementList;
 
     public readonly string? Name;
-    public readonly IFunction Function;
+    public readonly Acornima.Ast.IFunction Function;
 
     // Stores the AST node needed for creating the source text.
     // (This might be different from the Function node, e.g., in the case of class methods.)
     public readonly INode SourceTextNode;
 
-    public JintFunctionDefinition(IFunction function, INode sourceTextNode)
+    public JintFunctionDefinition(Acornima.Ast.IFunction function, INode sourceTextNode)
     {
         Function = function;
         Name = !string.IsNullOrEmpty(function.Id?.Name) ? function.Id!.Name : null;
         SourceTextNode = sourceTextNode;
     }
 
-    public JintFunctionDefinition(IFunction function)
+    public JintFunctionDefinition(Acornima.Ast.IFunction function)
         : this(function, function) { }
 
     public bool Strict => Function.IsStrict();
@@ -333,7 +333,7 @@ public sealed class JintFunctionDefinition
         internal readonly record struct VariableValuePair(Key Name, JsValue? InitialValue);
     }
 
-    internal static State BuildState(IFunction function, string? fullSourceText = null)
+    internal static State BuildState(Acornima.Ast.IFunction function, string? fullSourceText = null)
     {
         var state = new State();
 
@@ -699,7 +699,7 @@ Start:
     }
 
     private static void ProcessParameters(
-        IFunction function,
+        Acornima.Ast.IFunction function,
         State state,
         out bool hasArguments)
     {
@@ -745,7 +745,7 @@ Start:
 
     private static class ArgumentsUsageAstVisitor
     {
-        public static bool HasArgumentsReference(IFunction function)
+        public static bool HasArgumentsReference(Acornima.Ast.IFunction function)
         {
             if (HasArgumentsReference(function.Body))
             {
@@ -790,7 +790,7 @@ Start:
 
     private static class EvalContextAstVisitor
     {
-        public static bool HasEvalOrDebugger(IFunction function)
+        public static bool HasEvalOrDebugger(Acornima.Ast.IFunction function)
         {
             if (HasEvalOrDebugger(function.Body))
             {
@@ -899,7 +899,7 @@ Start:
     /// </summary>
     internal static class EnvironmentEscapeAstVisitor
     {
-        internal static bool MayEscape(IFunction function)
+        internal static bool MayEscape(Acornima.Ast.IFunction function)
         {
             var body = function.Body;
             if (IsCapturing(body))
@@ -914,7 +914,7 @@ Start:
         /// any of the specified slot variable names. If closures exist but don't reference any slot
         /// variables, the environment can still be safely cached.
         /// </summary>
-        internal static bool MayEscapeWithReferences(IFunction function, Key[] slotNames)
+        internal static bool MayEscapeWithReferences(Acornima.Ast.IFunction function, Key[] slotNames)
         {
             var body = function.Body;
 

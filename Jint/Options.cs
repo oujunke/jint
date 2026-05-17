@@ -508,7 +508,7 @@ public class Options
         /// If the callback returns <see langword="null"/>, Jint will use its own default logic.
         /// </summary>
         /// <remarks>
-        /// In most cases, the AST node passed to the callback is of type <see cref="IFunction" />.
+        /// In most cases, the AST node passed to the callback is of type <see cref="Acornima.Ast.IFunction" />.
         /// However, there are some special cases:<br/>
         /// - For class constructors, a node of type <see cref="IClass"/> is passed
         ///   since <c>toString()</c> should return the code of the entire class as per specification.<br/>

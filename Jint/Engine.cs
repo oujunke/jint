@@ -180,7 +180,7 @@ public sealed partial class Engine : IDisposable
 
     internal Node? _lastSyntaxElement;
 
-    internal Realm Realm => _realmInConstruction ?? ExecutionContext.Realm;
+    public Realm Realm => _realmInConstruction ?? ExecutionContext.Realm;
 
     /// <summary>
     /// The well-known intrinsics for this engine instance.
@@ -963,7 +963,7 @@ public sealed partial class Engine : IDisposable
     /// <summary>
     /// Gets the last evaluated <see cref="Node"/>.
     /// </summary>
-    internal Node GetLastSyntaxElement()
+    public Node GetLastSyntaxElement()
     {
         return _lastSyntaxElement!;
     }

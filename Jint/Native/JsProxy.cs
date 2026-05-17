@@ -553,7 +553,7 @@ internal sealed class JsProxy : ObjectInstance, IConstructor, ICallable
     /// <summary>
     /// https://tc39.es/ecma262/#sec-proxy-object-internal-methods-and-internal-slots-setprototypeof-v
     /// </summary>
-    internal override bool SetPrototypeOf(JsValue value)
+    public override bool SetPrototypeOf(JsValue value)
     {
         if (!TryCallHandler(TrapSetProtoTypeOf, [_target, value], out var result))
         {

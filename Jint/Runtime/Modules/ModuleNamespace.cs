@@ -82,7 +82,7 @@ internal sealed class ModuleNamespace : ObjectInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-module-namespace-exotic-objects-setprototypeof-v
     /// </summary>
-    internal override bool SetPrototypeOf(JsValue value) => SetImmutablePrototype(value);
+    public override bool SetPrototypeOf(JsValue value) => SetImmutablePrototype(value);
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-set-immutable-prototype

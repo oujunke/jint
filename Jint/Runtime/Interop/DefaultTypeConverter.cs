@@ -75,7 +75,7 @@ public class DefaultTypeConverter : ITypeConverter
         return TryConvert(value, type, formatProvider, propagateException: false, out converted, out _);
     }
 
-    private static readonly ConditionalWeakTable<IFunction, Func<object, Delegate>> _targetBinderDelegateCache = new();
+    private static readonly ConditionalWeakTable<Acornima.Ast.IFunction, Func<object, Delegate>> _targetBinderDelegateCache = new();
     private static readonly ConditionalWeakTable<object, Delegate> _boundTargetDelegateCache = new();
 
     private bool TryConvert(

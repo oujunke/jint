@@ -11,7 +11,7 @@ namespace Jint.Native.Function;
 
 [DebuggerDisplay("{ToString(),nq}")]
 #pragma warning disable MA0049
-public abstract partial class Function : ObjectInstance, ICallable
+public abstract partial class Function : ObjectInstance, IFunction
 #pragma warning restore MA0049
 {
     protected PropertyDescriptor? _prototypeDescriptor;
@@ -70,7 +70,7 @@ public abstract partial class Function : ObjectInstance, ICallable
     }
 
     // for example RavenDB wants to inspect this
-    public IFunction? FunctionDeclaration => _functionDefinition?.Function;
+    public Acornima.Ast.IFunction? FunctionDeclaration => _functionDefinition?.Function;
 
     internal override bool IsCallable => true;
 
@@ -84,6 +84,8 @@ public abstract partial class Function : ObjectInstance, ICallable
     public bool Strict => _thisMode == FunctionThisMode.Strict;
     internal override bool IsConstructor => IsConstructors;
     protected virtual bool IsConstructors => this is IConstructor;
+
+    public JintFunctionDefinition? FunctionDefinition => _functionDefinition;
 
     public override IEnumerable<KeyValuePair<JsValue, PropertyDescriptor>> GetOwnProperties()
     {
@@ -400,6 +402,18 @@ public abstract partial class Function : ObjectInstance, ICallable
         name = name.TrimStart(_functionNameTrimStartChars);
 
         return $"function {name}() {{ [native code] }}";
+    }
+    public string GetFunName()
+    {
+        var nameValue = _nameDescriptor != null ? UnwrapJsValue(_nameDescriptor) : JsString.Empty;
+        var name = "";
+        if (!nameValue.IsUndefined())
+        {
+            name = TypeConverter.ToString(nameValue);
+        }
+
+        name = name.TrimStart(_functionNameTrimStartChars);
+        return name;
     }
 
     private sealed class ObjectInstanceWithConstructor : ObjectInstance

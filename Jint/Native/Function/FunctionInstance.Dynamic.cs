@@ -75,7 +75,7 @@ public partial class Function
             body = TypeConverter.ToString(arguments[argCount - 1]);
         }
 
-        IFunction? function = null;
+        Acornima.Ast.IFunction? function = null;
         try
         {
             string? functionExpression = null;
@@ -133,7 +133,7 @@ public partial class Function
                 parserOptions = parserOptions with { AllowReturnOutsideFunction = true };
             }
             Parser parser = new(parserOptions);
-            function = (IFunction) parser.ParseScriptGuarded(callerRealm, functionExpression, strict: _engine._isStrict).Body[0];
+            function = (Acornima.Ast.IFunction) parser.ParseScriptGuarded(callerRealm, functionExpression, strict: _engine._isStrict).Body[0];
         }
         catch (ParseErrorException ex)
         {

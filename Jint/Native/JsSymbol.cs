@@ -7,7 +7,7 @@ public sealed class JsSymbol : JsValue, IEquatable<JsSymbol>
 {
     internal readonly JsValue _value;
 
-    internal JsSymbol(string value) : this(new JsString(value))
+    public JsSymbol(string value) : this(new JsString(value))
     {
     }
 

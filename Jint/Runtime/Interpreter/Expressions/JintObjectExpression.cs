@@ -39,7 +39,7 @@ internal sealed class JintObjectExpression : JintExpression
                 return _functionDefinition;
             }
 
-            var function = _value.Value as IFunction;
+            var function = _value.Value as Acornima.Ast.IFunction;
             if (function is null)
             {
                 Throw.SyntaxError(engine.Realm);

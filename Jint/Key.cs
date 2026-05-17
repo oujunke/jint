@@ -9,7 +9,7 @@ namespace Jint;
 /// as runtime does a lot of repetitive dictionary lookups.
 /// </summary>
 [DebuggerDisplay("{" + nameof(Name) + "}")]
-internal readonly struct Key : IEquatable<Key>
+public readonly struct Key : IEquatable<Key>
 {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private Key(string name)

@@ -107,7 +107,7 @@ public static class AstExtensions
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static bool IsStrict(this IFunction function)
+    internal static bool IsStrict(this Acornima.Ast.IFunction function)
     {
         return function.Body is FunctionBody { Strict: true };
     }
@@ -129,7 +129,7 @@ public static class AstExtensions
             return false;
         }
 
-        if (node is IFunction { Id: not null })
+        if (node is Acornima.Ast.IFunction { Id: not null })
         {
             return true;
         }
@@ -339,7 +339,7 @@ public static class AstExtensions
         var privateEnv = runningExecutionContext.PrivateEnvironment;
 
         var prototype = functionPrototype ?? intrinsics.Function.PrototypeObject;
-        var function = m.Value as IFunction;
+        var function = m.Value as Acornima.Ast.IFunction;
         if (function is null)
         {
             Throw.SyntaxError(engine.Realm);

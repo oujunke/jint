@@ -79,7 +79,7 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
     /// </summary>
     public virtual bool Extensible { get; private set; }
 
-    internal PropertyDictionary? Properties
+    public PropertyDictionary? Properties
     {
         [DebuggerStepThrough]
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -166,7 +166,7 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
         unchecked { _propertiesVersion++; }
     }
 
-    internal void SetSymbols(SymbolDictionary? symbols)
+    public void SetSymbols(SymbolDictionary? symbols)
     {
         _symbols = symbols;
     }
@@ -1291,7 +1291,7 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
     /// <summary>
     /// https://tc39.es/ecma262/#sec-ordinarysetprototypeof
     /// </summary>
-    internal virtual bool SetPrototypeOf(JsValue value)
+    public virtual bool SetPrototypeOf(JsValue value)
     {
         if (!value.IsObject() && !value.IsNull())
         {

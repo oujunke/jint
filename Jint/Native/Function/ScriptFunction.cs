@@ -22,7 +22,7 @@ public sealed class ScriptFunction : Function, IConstructor
     /// </summary>
     public ScriptFunction(
         Engine engine,
-        IFunction functionDeclaration,
+        Acornima.Ast.IFunction functionDeclaration,
         bool strict,
         ObjectInstance? proto = null)
         : this(

@@ -3,7 +3,7 @@ using System.Runtime.CompilerServices;
 
 namespace Jint.Collections;
 
-internal abstract class DictionaryBase<TValue> : IEngineDictionary<Key, TValue>
+public abstract class DictionaryBase<TValue> : IEngineDictionary<Key, TValue>
 {
     public ref TValue this[Key key]
     {

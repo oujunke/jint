@@ -679,7 +679,7 @@ internal sealed class ClassDefinition
         return new ClassFieldDefinition { Name = name, Initializer = initializer };
     }
 
-    private sealed class ClassFieldFunction : Node, IFunction
+    private sealed class ClassFieldFunction : Node, Acornima.Ast.IFunction
     {
         private readonly NodeList<Node> _nodeList;
         private readonly FunctionBody _statement;
@@ -721,7 +721,7 @@ internal sealed class ClassDefinition
         return new ClassStaticBlockDefinition { BodyFunction = bodyFunction };
     }
 
-    private sealed class ClassStaticBlockFunction : Node, IFunction
+    private sealed class ClassStaticBlockFunction : Node, Acornima.Ast.IFunction
     {
         private readonly FunctionBody _statement;
         private readonly NodeList<Node> _params;
@@ -751,7 +751,7 @@ internal sealed class ClassDefinition
         T method,
         bool enumerable) where T : IProperty
     {
-        var function = method.Value as IFunction;
+        var function = method.Value as Acornima.Ast.IFunction;
         if (function is null)
         {
             Throw.SyntaxError(obj.Engine.Realm);

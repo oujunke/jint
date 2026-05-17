@@ -22,7 +22,7 @@ namespace Jint.Collections;
 /// </summary>
 [DebuggerTypeProxy(typeof(DictionarySlimDebugView<>))]
 [DebuggerDisplay("Count = {Count}")]
-internal sealed class StringDictionarySlim<TValue> : DictionaryBase<TValue>, IReadOnlyCollection<KeyValuePair<Key, TValue>>
+public sealed class StringDictionarySlim<TValue> : DictionaryBase<TValue>, IReadOnlyCollection<KeyValuePair<Key, TValue>>
 {
     // We want to initialize without allocating arrays. We also want to avoid null checks.
     // Array.Empty would give divide by zero in modulo operation. So we use static one element arrays.

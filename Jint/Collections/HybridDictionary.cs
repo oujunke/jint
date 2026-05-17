@@ -5,7 +5,7 @@ using System.Runtime.CompilerServices;
 
 namespace Jint.Collections;
 
-internal sealed class HybridDictionary<TValue> : IEngineDictionary<Key, TValue>, IEnumerable<KeyValuePair<Key, TValue>>
+public sealed class HybridDictionary<TValue> : IEngineDictionary<Key, TValue>, IEnumerable<KeyValuePair<Key, TValue>>
 {
     private const int CutoverPoint = 9;
     private const int InitialDictionarySize = 13;

@@ -53,7 +53,7 @@ public sealed partial class ObjectPrototype : Prototype
         return Undefined;
     }
 
-    internal override bool SetPrototypeOf(JsValue value)
+    public override bool SetPrototypeOf(JsValue value)
     {
         return SameValue(value, _prototype ?? Null);
     }

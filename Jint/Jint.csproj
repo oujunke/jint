@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <NeutralLanguage>en-US</NeutralLanguage>
-    <TargetFrameworks>net462;netstandard2.0;netstandard2.1;net8.0;net10.0</TargetFrameworks>
+    <TargetFrameworks>net10.0</TargetFrameworks>
 
     <AssemblyOriginatorKeyFile>Jint.snk</AssemblyOriginatorKeyFile>
     <SignAssembly>true</SignAssembly>
@@ -38,19 +38,19 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <None Include="../README.md" Pack="true" PackagePath="\"/>
+    <None Include="../README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="Native/Intl/Data/LikelySubtags.txt"/>
+    <EmbeddedResource Include="Native/Intl/Data/LikelySubtags.txt" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Acornima" />
     <PackageReference Include="Meziantou.Analyzer" PrivateAssets="all" />
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\acornima\src\Acornima\Acornima.csproj" />
     <ProjectReference Include="..\Jint.SourceGenerators\Jint.SourceGenerators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
 

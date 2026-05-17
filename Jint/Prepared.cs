@@ -4,7 +4,7 @@ namespace Jint;
 
 public readonly struct Prepared<TProgram> where TProgram : Program
 {
-    internal Prepared(TProgram program, ParserOptions parserOptions)
+    public Prepared(TProgram program, ParserOptions parserOptions)
     {
         Program = program;
         ParserOptions = parserOptions;

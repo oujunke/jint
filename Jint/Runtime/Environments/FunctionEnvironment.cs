@@ -150,7 +150,7 @@ internal sealed class FunctionEnvironment : DeclarativeEnvironment
         _dictionary.CheckExistingKeys = true;
     }
 
-    internal void AddFunctionParameters(EvaluationContext context, IFunction functionDeclaration, JsCallArguments arguments)
+    internal void AddFunctionParameters(EvaluationContext context, Acornima.Ast.IFunction functionDeclaration, JsCallArguments arguments)
     {
         var empty = _dictionary is null || _dictionary.Count == 0;
         ref readonly var parameters = ref functionDeclaration.Params;
